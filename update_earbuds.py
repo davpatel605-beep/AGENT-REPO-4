@@ -32,8 +32,8 @@ SUPABASE_KEY   = os.environ["SUPABASE_KEY"].strip()
 SCRAPERAPI_KEY = os.environ["SCRAPERAPI_KEY"].strip()
 
 SCRAPERAPI_ENDPOINT = "https://api.scraperapi.com/"
-REQUEST_DELAY   = 3
-REQUEST_TIMEOUT = 90
+REQUEST_DELAY   = 1    # reduced from 3 → faster
+REQUEST_TIMEOUT = 60   # reduced from 90
 
 
 # ── Supabase ──────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ def fetch_page(url: str) -> BeautifulSoup | None:
         return None
 
 
-# ── Parse product page ────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def safe(tag, default=""):
     return tag.get_text(strip=True) if tag else default
 
@@ -77,6 +77,7 @@ def clean_price(text: str) -> str:
     return text.replace("₹", "").replace(",", "").strip()
 
 
+# ── Parse product page ────────────────────────────────────────────────────────
 def parse_product_page(soup: BeautifulSoup) -> dict:
     data = {
         "Current Price":     "",
@@ -87,14 +88,11 @@ def parse_product_page(soup: BeautifulSoup) -> dict:
     }
 
     # ── Current Price ─────────────────────────────────────────────────────────
-    # First match = main product price (not related products)
-    cur = soup.select_one(
-        "div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0"
-    )
+    cur = soup.select_one("div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0")
     if cur:
         data["Current Price"] = clean_price(safe(cur))
 
-    # ── Original / MRP Price ──────────────────────────────────────────────────
+    # ── Original / MRP ────────────────────────────────────────────────────────
     mrp = soup.select_one(
         "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu"
     )
@@ -102,39 +100,49 @@ def parse_product_page(soup: BeautifulSoup) -> dict:
         data["Original Price"] = clean_price(safe(mrp))
 
     # ── Discount ──────────────────────────────────────────────────────────────
-    # Format: "78%3,199₹699" -- extract leading number before %
+    # Selector 1: new format  "85%3,199₹699"
     disc_tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
     if disc_tag:
         disc_text = safe(disc_tag)
-        match = re.match(r"(\d+)%", disc_text)
+        match = re.search(r"(\d+)%", disc_text)
         if match:
             data["Discount"] = match.group(1) + "%"
 
-    # ── Rating ────────────────────────────────────────────────────────────────
-    # Try multiple selectors for rating number
-    for sel in [
-        "div.v1zwn21l.v1zwn2b._1psv1zeb9._1psv1ze0",
-        "div.XQDdHH",
-        "div._3LWZlK",
-        "div.ipqd2A",
-        "span.Y1HWO0",
-    ]:
-        tag = soup.select_one(sel)
-        if tag:
-            text = safe(tag)
-            # Rating should be like "4.3" or "4"
-            if re.match(r"^\d(\.\d)?$", text):
-                data["Rating"] = text
+    # Selector 2: fallback — look for any small element with "% off" or just "%"
+    if not data["Discount"]:
+        for tag in soup.find_all(["div", "span"]):
+            text = safe(tag).strip()
+            # Match patterns like "78% off" or "78%"
+            m = re.fullmatch(r"(\d+)%\s*(off)?", text, re.IGNORECASE)
+            if m:
+                data["Discount"] = m.group(1) + "%"
                 break
 
+    # ── Rating ────────────────────────────────────────────────────────────────
+    # Strategy: scan ALL small divs/spans for a decimal like "4.3" or "3.9"
+    for tag in soup.find_all(["div", "span"]):
+        text = safe(tag).strip()
+        if re.fullmatch(r"[1-5](\.\d)?", text):   # e.g. "4.3" or "4"
+            data["Rating"] = text
+            break
+
     # ── Number of Reviews ─────────────────────────────────────────────────────
-    # "based on 265 ratings byVerified Buyers" -- extract number
+    # "based on 265 ratings byVerified Buyers"
     rev_tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zegu")
     if rev_tag:
         rev_text = safe(rev_tag)
         nums = re.findall(r"[\d,]+", rev_text)
         if nums:
             data["Number of Reviews"] = nums[0].replace(",", "")
+
+    # Fallback for reviews
+    if not data["Number of Reviews"]:
+        for tag in soup.find_all(["div", "span"]):
+            text = safe(tag)
+            m = re.search(r"([\d,]+)\s+ratings?", text, re.IGNORECASE)
+            if m:
+                data["Number of Reviews"] = m.group(1).replace(",", "")
+                break
 
     return data
 
@@ -169,6 +177,7 @@ def main():
     total   = len(products)
     updated = 0
     failed  = 0
+    skipped = 0
 
     for idx, row in enumerate(products, start=1):
         product_link = row["Product Link"].strip()
@@ -180,13 +189,21 @@ def main():
         soup = fetch_page(product_link)
         if soup is None:
             log.warning("   Skipping -- could not fetch page.")
-            failed += 1
+            skipped += 1
             time.sleep(REQUEST_DELAY)
             continue
 
         data = parse_product_page(soup)
         log.info(f"   Extracted -> {data}")
 
+        # If ALL fields are empty, page likely did not render correctly
+        if not any(data.values()):
+            log.warning("   WARNING: All fields empty -- page may not have rendered.")
+            skipped += 1
+            time.sleep(REQUEST_DELAY)
+            continue
+
+        # Update even partial data (whatever was extracted)
         success = update_row(client, product_link, data)
         if success:
             updated += 1
@@ -198,6 +215,7 @@ def main():
     log.info("\n" + "=" * 70)
     log.info(f"  Run complete.")
     log.info(f"  Updated : {updated}")
+    log.info(f"  Skipped : {skipped}")
     log.info(f"  Failed  : {failed}")
     log.info(f"  Total   : {total}")
     log.info("=" * 70)
