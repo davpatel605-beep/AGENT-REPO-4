@@ -1,61 +1,42 @@
-# .github/workflows/update_earbuds.yml
-# ─────────────────────────────────────────────────────────────────────────────
-# Daily Flipkart Earbuds Price & Rating Updater
-#
-# Secrets required (Settings → Secrets → Actions):
-#   SUPABASE_URL        – your Supabase project URL
-#   SUPABASE_KEY        – Supabase service-role key
-#   SCRAPERAPI_KEY      – ScraperAPI key
-#   FLIPKART_CAT_URL    – Flipkart category/listing base URL
-#                         e.g. https://www.flipkart.com/audio/earphones/pr?sid=ckf,dkf
-# ─────────────────────────────────────────────────────────────────────────────
-
-name: Update Earbuds Prices & Ratings
+name: Update Gaming CPU Prices & Ratings
 
 on:
   schedule:
-    # Runs daily at 02:30 UTC (08:00 IST) — low-traffic window
-    - cron: "30 2 * * *"
-
-  # Allow manual trigger from the GitHub Actions tab
+    - cron: "0 3 * * *"   # Daily 08:30 AM IST
   workflow_dispatch:
 
 jobs:
-  update-earbuds:
+  update-gaming-cpu:
     name: Scrape Flipkart & Update Supabase
     runs-on: ubuntu-latest
-    timeout-minutes: 30       # Kill job if it hangs (safety net)
+    timeout-minutes: 60
 
     steps:
-      # ── 1. Checkout repo ──────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ──────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # ── 3. Install dependencies ───────────────────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 4. Run the updater script ─────────────────────────────────────────
-      - name: Run update_earbuds.py
+      - name: Run update_gaming_cpu.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
-        run: python update_earbuds.py
+        run: python update_gaming_cpu.py
 
-      # ── 5. Upload logs as artifact (optional, helpful for debugging) ───────
       - name: Upload run log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: run-log-${{ github.run_number }}
+          name: gaming-cpu-log-${{ github.run_number }}
           path: "*.log"
           if-no-files-found: ignore
           retention-days: 7
+
