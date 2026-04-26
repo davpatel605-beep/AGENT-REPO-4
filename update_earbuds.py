@@ -67,6 +67,7 @@ def fetch_page(url: str) -> BeautifulSoup | None:
         "url":          url,
         "country_code": "in",
         "premium":      "true",
+        "render":       "true",
     }
     full = f"{SCRAPERAPI_ENDPOINT}?{urlencode(params)}"
     try:
