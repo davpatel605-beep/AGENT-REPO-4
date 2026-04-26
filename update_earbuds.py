@@ -62,7 +62,7 @@ def get_supabase_client() -> Client:
 def fetch_db_links(client: Client) -> set[str]:
     """Return a set of clean product URLs already stored in the earbuds table."""
     log.info("📦 Fetching existing product links from Supabase...")
-    result = client.table("earbuds").select("Product Link").execute()
+    result = client.table("earbuds").select('"Product Link"').execute()
     links = {row["Product Link"].strip() for row in result.data if row.get("Product Link")}
     log.info(f"   → {len(links)} product(s) found in DB.")
     return links
@@ -202,14 +202,14 @@ def update_product(client: Client, product: dict) -> bool:
     """Upsert price/rating data for one product. Returns True on success."""
     url = product["Product Link"]
     payload = {
-        "Current Price": product["Current Price"],
-        "Original Price": product["Original Price"],
-        "Discount": product["Discount"],
-        "Rating": product["Rating"],
-        "Number of Reviews": product["Number of Reviews"],
+        "Current Price":      product["Current Price"],
+        "Original Price":     product["Original Price"],
+        "Discount":           product["Discount"],
+        "Rating":             product["Rating"],
+        "Number of Reviews":  product["Number of Reviews"],
     }
     try:
-        client.table("earbuds").update(payload).eq("Product Link", url).execute()
+        client.table("earbuds").update(payload).eq('"Product Link"', url).execute()
         log.info(f"   ✅ UPDATED  → {url}")
         log.info(f"              Price: {product['Current Price']}  |  "
                  f"MRP: {product['Original Price']}  |  "
@@ -297,3 +297,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
