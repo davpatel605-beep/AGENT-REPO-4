@@ -48,7 +48,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
-          FLIPKART_CAT_URL: ${{ secrets.FLIPKART_CAT_URL }}
         run: python update_earbuds.py
 
       # ── 5. Upload logs as artifact (optional, helpful for debugging) ───────
@@ -60,4 +59,3 @@ jobs:
           path: "*.log"
           if-no-files-found: ignore
           retention-days: 7
-
