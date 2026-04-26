@@ -1,13 +1,12 @@
 """
-update_earbuds.py  —  Per-Product URL Mode
-─────────────────────────────────────────────────────────────────────────────
-Fetches each Product Link from Supabase, scrapes the individual Flipkart
-product page via ScraperAPI, extracts price/rating data, and updates the row.
+update_earbuds.py  --  Per-Product URL Mode
+Fetches each Product Link from Supabase, scrapes the Flipkart product page
+via ScraperAPI, extracts price/rating, and updates the row.
 
 Environment Variables (GitHub Secrets):
-  SUPABASE_URL     – https://xxxx.supabase.co
-  SUPABASE_KEY     – service-role key
-  SCRAPERAPI_KEY   – ScraperAPI key
+  SUPABASE_URL   -- https://xxxx.supabase.co
+  SUPABASE_KEY   -- service-role key
+  SCRAPERAPI_KEY -- ScraperAPI key
 """
 
 import os
@@ -19,9 +18,7 @@ from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LOGGING
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -29,9 +26,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 SUPABASE_URL   = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY   = os.environ["SUPABASE_KEY"].strip()
 SCRAPERAPI_KEY = os.environ["SCRAPERAPI_KEY"].strip()
@@ -41,15 +36,12 @@ REQUEST_DELAY   = 3
 REQUEST_TIMEOUT = 90
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SUPABASE
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Supabase ──────────────────────────────────────────────────────────────────
 def get_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 def fetch_all_products(client: Client) -> list[dict]:
-    """Fetch all rows from the earbuds table that have a Product Link."""
     log.info("Fetching all product rows from Supabase...")
     result = client.table("earbuds").select("*").execute()
     rows = [r for r in result.data if r.get("Product Link", "").strip()]
@@ -57,11 +49,8 @@ def fetch_all_products(client: Client) -> list[dict]:
     return rows
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SCRAPERAPI FETCH
-# ─────────────────────────────────────────────────────────────────────────────
+# ── ScraperAPI fetch ──────────────────────────────────────────────────────────
 def fetch_page(url: str) -> BeautifulSoup | None:
-    """Fetch a Flipkart product page through ScraperAPI."""
     params = {
         "api_key":      SCRAPERAPI_KEY,
         "url":          url,
@@ -79,15 +68,16 @@ def fetch_page(url: str) -> BeautifulSoup | None:
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PARSE INDIVIDUAL PRODUCT PAGE
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Parse product page ────────────────────────────────────────────────────────
 def safe(tag, default=""):
     return tag.get_text(strip=True) if tag else default
 
 
+def clean_price(text: str) -> str:
+    return text.replace("₹", "").replace(",", "").strip()
+
+
 def parse_product_page(soup: BeautifulSoup) -> dict:
-    """Extract price, MRP, discount, rating, and reviews from a product page."""
     data = {
         "Current Price":     "",
         "Original Price":    "",
@@ -96,75 +86,78 @@ def parse_product_page(soup: BeautifulSoup) -> dict:
         "Number of Reviews": "",
     }
 
-    # Current Price
-    cur = (
-        soup.select_one("div.Nx9bqj.CxhGGd")
-        or soup.select_one("div.Nx9bqj")
-        or soup.select_one("div._30jeq3._16Jk6d")
-        or soup.select_one("div._30jeq3")
+    # ── Current Price ─────────────────────────────────────────────────────────
+    # First match = main product price (not related products)
+    cur = soup.select_one(
+        "div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0"
     )
-    data["Current Price"] = safe(cur).replace("₹", "").replace(",", "").strip()
+    if cur:
+        data["Current Price"] = clean_price(safe(cur))
 
-    # Original / MRP Price
-    mrp = (
-        soup.select_one("div.yRaY8j")
-        or soup.select_one("div._3I9_wc")
+    # ── Original / MRP Price ──────────────────────────────────────────────────
+    mrp = soup.select_one(
+        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu"
     )
-    data["Original Price"] = safe(mrp).replace("₹", "").replace(",", "").strip()
+    if mrp:
+        data["Original Price"] = clean_price(safe(mrp))
 
-    # Discount
-    disc = (
-        soup.select_one("div.UkUFwK span")
-        or soup.select_one("div.VGWC+T span")
-        or soup.select_one("span._3Ay6Sb")
-    )
-    data["Discount"] = safe(disc).replace("off", "").strip()
+    # ── Discount ──────────────────────────────────────────────────────────────
+    # Format: "78%3,199₹699" -- extract leading number before %
+    disc_tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
+    if disc_tag:
+        disc_text = safe(disc_tag)
+        match = re.match(r"(\d+)%", disc_text)
+        if match:
+            data["Discount"] = match.group(1) + "%"
 
-    # Rating
-    rat = (
-        soup.select_one("div.XQDdHH")
-        or soup.select_one("div._3LWZlK")
-        or soup.select_one("div.ipqd2A")
-        or soup.select_one("span.Y1HWO0")
-    )
-    data["Rating"] = safe(rat)
+    # ── Rating ────────────────────────────────────────────────────────────────
+    # Try multiple selectors for rating number
+    for sel in [
+        "div.v1zwn21l.v1zwn2b._1psv1zeb9._1psv1ze0",
+        "div.XQDdHH",
+        "div._3LWZlK",
+        "div.ipqd2A",
+        "span.Y1HWO0",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            text = safe(tag)
+            # Rating should be like "4.3" or "4"
+            if re.match(r"^\d(\.\d)?$", text):
+                data["Rating"] = text
+                break
 
-    # Number of Reviews
-    rev = (
-        soup.select_one("span.Wphh3N")
-        or soup.select_one("span._2_R_DZ")
-        or soup.select_one("span._13vcmD")
-    )
-    rev_text = safe(rev)
-    if rev_text:
+    # ── Number of Reviews ─────────────────────────────────────────────────────
+    # "based on 265 ratings byVerified Buyers" -- extract number
+    rev_tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zegu")
+    if rev_tag:
+        rev_text = safe(rev_tag)
         nums = re.findall(r"[\d,]+", rev_text)
-        data["Number of Reviews"] = nums[0].replace(",", "") if nums else ""
+        if nums:
+            data["Number of Reviews"] = nums[0].replace(",", "")
 
     return data
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UPDATE SUPABASE ROW
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Update Supabase row ───────────────────────────────────────────────────────
 def update_row(client: Client, product_link: str, data: dict) -> bool:
-    """Update a single row matched by Product Link."""
     try:
         client.table("earbuds").update(data).eq("Product Link", product_link).execute()
         log.info(f"   [OK] UPDATED")
-        log.info(f"        Price: {data['Current Price']}  |  "
-                 f"MRP: {data['Original Price']}  |  "
-                 f"Discount: {data['Discount']}  |  "
-                 f"Rating: {data['Rating']}  |  "
-                 f"Reviews: {data['Number of Reviews']}")
+        log.info(
+            f"        Price: {data['Current Price']}  |  "
+            f"MRP: {data['Original Price']}  |  "
+            f"Discount: {data['Discount']}  |  "
+            f"Rating: {data['Rating']}  |  "
+            f"Reviews: {data['Number of Reviews']}"
+        )
         return True
     except Exception as exc:
         log.error(f"   X DB update failed: {exc}")
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     log.info("=" * 70)
     log.info("  Flipkart Earbuds Updater  --  Per-Product URL Mode")
@@ -192,12 +185,7 @@ def main():
             continue
 
         data = parse_product_page(soup)
-
-        if not any(data.values()):
-            log.warning("   WARNING: No data extracted -- selector mismatch. Skipping.")
-            failed += 1
-            time.sleep(REQUEST_DELAY)
-            continue
+        log.info(f"   Extracted -> {data}")
 
         success = update_row(client, product_link, data)
         if success:
@@ -217,4 +205,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
