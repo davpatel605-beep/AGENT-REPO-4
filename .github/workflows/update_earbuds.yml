@@ -48,7 +48,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
-        run: python debug_selectors.py
+        run: python update_earbuds.py
 
       # ── 5. Upload logs as artifact (optional, helpful for debugging) ───────
       - name: Upload run log
