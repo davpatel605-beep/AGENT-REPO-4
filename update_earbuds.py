@@ -76,8 +76,8 @@ def scrape_page(url: str) -> BeautifulSoup | None:
     params = {
         "api_key": SCRAPERAPI_KEY,
         "url": url,
+        "country_code": "in",
         "premium": "true",
-        "render": "true",
     }
     full_url = f"{SCRAPERAPI_ENDPOINT}?{urlencode(params)}"
     try:
