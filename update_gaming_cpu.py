@@ -335,35 +335,73 @@ def extract_rating(soup: BeautifulSoup, full_text: str) -> str:
 
 # ─────────────────────────────────────────────────────────────────────────────
 def extract_reviews(soup: BeautifulSoup, full_text: str, rating: str) -> str:
-    for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zegu", "span.Wphh3N", "span._2_R_DZ"]:
+    """
+    Reviews extraction.
+    Visual pattern on Flipkart: "3.7 ★ | 356"
+    Number after | separator next to rating = review count.
+    May be plain number or have k suffix (56k = 56000).
+    """
+
+    # Method 1: rating | number pattern (exact visual match from page)
+    # Handles: "3.7 ★ | 356"  or  "4.1 | 1,821"
+    if rating:
+        patterns = [
+            re.escape(rating) + r"\s*[★✩⭐]\s*[|]\s*([\d,]+[kK]?)",
+            re.escape(rating) + r"\s*[|]\s*([\d,]+[kK]?)",
+            re.escape(rating) + r"\s*[★✩⭐]\s*([\d,]+[kK]?)",
+            re.escape(rating) + r"[^\d]{1,5}([\d,]{2,}[kK]?)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, full_text)
+            if m:
+                val = parse_k(m.group(1))
+                if val.isdigit() and int(val) >= 2:
+                    log.info(f"   [RATING|] reviews={val}")
+                    return val
+
+    # Method 2: known CSS selectors
+    for sel in [
+        "div._1psv1zeb9._1psv1ze0._1psv1zegu",
+        "span.Wphh3N",
+        "span._2_R_DZ",
+        "span._13vcmD",
+    ]:
         tag = soup.select_one(sel)
         if tag:
-            nums = re.findall(r"[\d,]+[kK]?", safe(tag))
+            text = safe(tag)
+            nums = re.findall(r"[\d,]+[kK]?", text)
             if nums:
-                return parse_k(nums[0])
+                val = parse_k(nums[0])
+                if val.isdigit() and int(val) >= 2:
+                    return val
 
-    if rating:
-        m = re.search(re.escape(rating) + r"\s*[★✩⭐]?\s*[|,]\s*([\d,]+[kK]?)", full_text)
-        if m:
-            return parse_k(m.group(1))
-
+    # Method 3: text patterns
     for pattern in [
         r"([\d,]+[kK]?)\s+[Rr]ating",
         r"([\d,]+[kK]?)\s+[Rr]eview",
         r"based on\s+([\d,]+[kK]?)\s+rating",
+        r"([\d,]+[kK]?)\s+verified",
     ]:
         m = re.search(pattern, full_text, re.I)
         if m:
             val = parse_k(m.group(1))
-            if val.isdigit() and int(val) >= 5:
+            if val.isdigit() and int(val) >= 2:
                 return val
 
-    if rating:
-        m = re.search(re.escape(rating) + r"[^\d]{1,15}([\d,]{2,}[kK]?)", full_text)
-        if m:
-            val = parse_k(m.group(1))
-            if val.isdigit() and int(val) >= 5:
-                return val
+    # Method 4: find number inside rating-block tag
+    for tag in soup.find_all(["div", "span"]):
+        text    = safe(tag).strip()
+        classes = " ".join(tag.get("class", []))
+        # Tag that contains both rating and review count
+        if rating and rating in text and "|" in text:
+            parts = text.split("|")
+            for part in parts:
+                part = part.strip()
+                if part != rating and re.match(r"[\d,]+[kK]?$", part):
+                    val = parse_k(part)
+                    if val.isdigit() and int(val) >= 2:
+                        log.info(f"   [PIPE-SPLIT] reviews={val}")
+                        return val
 
     return ""
 
@@ -489,4 +527,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
