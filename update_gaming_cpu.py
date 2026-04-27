@@ -129,21 +129,26 @@ def extract_current_price(soup: BeautifulSoup, full_text: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: str) -> str:
+def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: str, discount: str = "") -> str:
     """
-    Original price = strikethrough MRP.
+    Original Price (MRP) Extraction — Maximum Accuracy
 
-    KEY INSIGHT from visual pattern:
-      Page shows:  ↓54%  29,999  ₹13,902
-      Original price ALWAYS sits BETWEEN discount% and current ₹price.
-      So pattern in text = discount_number% ... orig_number ... current_number
+    CORE STRATEGY:
+      We already have Current Price and Discount correctly.
+      Math: MRP = Current / (1 - Discount/100)
+      e.g.  13902 / (1 - 0.54) = ~30,221  → closest on page = 29,999
 
-    Methods in order:
-      1. Between-pattern: find number between X% and ₹current
-      2. JSON-LD structured data
-      3. <s> HTML strikethrough tag
-      4. CSS selectors
-      5. Price block near Add to cart
+      So we calculate expected MRP, then VERIFY by finding
+      the closest matching number on the actual page.
+      This is immune to CSS class changes and HTML structure changes.
+
+    FALLBACK CHAIN:
+      1. Math-first: calculate expected MRP → find closest on page
+      2. Between-pattern: number between X% and ₹current in text
+      3. <s> HTML tag (strikethrough element)
+      4. JSON-LD structured data
+      5. CSS class selectors
+      6. style=line-through tags
     """
 
     def is_valid(val: str) -> bool:
@@ -153,41 +158,66 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
             return int(val) > int(current_price)
         return True
 
-    # ── Method 1: BETWEEN PATTERN (most reliable visual logic) ───────────────
-    # Pattern: "54% 29,999 ₹13,902"
-    # Original price is the number that sits between % and ₹current
+    # ── METHOD 1: MATH-FIRST (most powerful — uses correct current+discount) ──
+    # If we know current price AND discount, we know approximately what MRP is.
+    # Then find that number on the page. This works regardless of HTML structure.
+    if current_price and current_price.isdigit() and discount:
+        disc_clean = discount.replace("%", "").strip()
+        if disc_clean.isdigit():
+            disc_val = int(disc_clean)
+            cur_val  = int(current_price)
+            if 1 <= disc_val <= 99 and cur_val > 0:
+                expected_mrp = cur_val / (1 - disc_val / 100)
+
+                # Collect ALL numbers from the page
+                all_numbers = re.findall(r"[\d,]{3,}", full_text)
+
+                best_match   = ""
+                best_pct_diff = float("inf")
+
+                for n in all_numbers:
+                    val_str = n.replace(",", "")
+                    if not val_str.isdigit():
+                        continue
+                    val_int = int(val_str)
+                    if not valid_price(val_str):
+                        continue
+                    if val_int <= cur_val:
+                        continue  # MRP must be greater than current
+                    pct_diff = abs(val_int - expected_mrp) / expected_mrp
+                    if pct_diff < best_pct_diff and pct_diff <= 0.20:  # within 20%
+                        best_pct_diff = pct_diff
+                        best_match    = val_str
+
+                if best_match:
+                    log.info(f"   [MATH] expected_mrp≈{int(expected_mrp)}  found={best_match}  diff={best_pct_diff:.1%}")
+                    return best_match
+
+    # ── METHOD 2: BETWEEN-PATTERN ─────────────────────────────────────────────
+    # On Flipkart page text sequence is: "54% 29,999 ₹13,902"
+    # MRP sits between % sign and ₹ current price
     if current_price:
-        # Find any sequence: digits% ... some_number ... ₹current
-        pattern = r"\d{1,2}%[^₹]{0,30}?((?:[\d,]{2,})){1,2}[^₹]{0,10}?₹?" + re.escape(current_price)
-        m = re.search(pattern, full_text)
-        if m:
-            # Extract all numbers between % and current price
-            between = full_text[max(0, m.start()):m.end()]
-            nums = re.findall(r"[\d,]{3,}", between)
-            for n in nums:
-                val = n.replace(",", "")
+        cur_pos = full_text.find(current_price)
+        if cur_pos > 30:
+            window = full_text[max(0, cur_pos - 200): cur_pos]
+            candidates = re.findall(r"[\d,]{3,}", window)
+            for c in reversed(candidates):
+                val = c.replace(",", "")
                 if is_valid(val):
                     log.info(f"   [BETWEEN] orig={val}")
                     return val
 
-        # Simpler version: find all numbers in vicinity of current price
-        # Look backwards from current price position
-        cur_pos = full_text.find(current_price)
-        if cur_pos > 0:
-            # Take text from 100 chars before current price
-            window = full_text[max(0, cur_pos - 150): cur_pos]
-            # Find all digit groups in this window
-            candidates = re.findall(r"[\d,]{3,}", window)
-            for c in reversed(candidates):  # closest to current price first
-                val = c.replace(",", "")
-                if is_valid(val):
-                    log.info(f"   [WINDOW-BEFORE] orig={val}")
-                    return val
+    # ── METHOD 3: <s> HTML TAG (strikethrough) ────────────────────────────────
+    for s_tag in soup.find_all("s"):
+        val = to_num(safe(s_tag))
+        if is_valid(val):
+            log.info(f"   [<s>] orig={val}")
+            return val
 
-    # ── Method 2: JSON-LD structured data ────────────────────────────────────
+    # ── METHOD 4: JSON-LD STRUCTURED DATA ────────────────────────────────────
     for script in soup.find_all("script", {"type": "application/ld+json"}):
         try:
-            obj = json.loads(script.string or "")
+            obj   = json.loads(script.string or "")
             items = obj if isinstance(obj, list) else [obj]
             for item in items:
                 offers = item.get("offers", {})
@@ -201,14 +231,7 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
         except Exception:
             pass
 
-    # ── Method 3: <s> HTML tag = strikethrough element ───────────────────────
-    for s_tag in soup.find_all("s"):
-        val = to_num(safe(s_tag))
-        if is_valid(val):
-            log.info(f"   [<s>] orig={val}")
-            return val
-
-    # ── Method 4: CSS selectors ───────────────────────────────────────────────
+    # ── METHOD 5: CSS CLASS SELECTORS ────────────────────────────────────────
     for sel in [
         "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
         "div.v1zwn21m._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
@@ -223,7 +246,7 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
             if is_valid(val):
                 return val
 
-    # ── Method 5: style=line-through ─────────────────────────────────────────
+    # ── METHOD 6: STYLE LINE-THROUGH ─────────────────────────────────────────
     for tag in soup.find_all(True):
         style   = tag.get("style", "")
         classes = " ".join(tag.get("class", []))
@@ -232,8 +255,8 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
             if is_valid(val):
                 return val
 
-    # ── Method 6: MRP keyword ─────────────────────────────────────────────────
-    m = re.search(r"M\.?R\.?P\.?\s*:?\s*[₹Rs\.]*\s*([\d,]+)", full_text, re.I)
+    # ── METHOD 7: MRP KEYWORD ────────────────────────────────────────────────
+    m = re.search(r"M\.?R\.?P\.?\s*:?\s*[₹]*\s*([\d,]+)", full_text, re.I)
     if m:
         val = m.group(1).replace(",", "")
         if is_valid(val):
@@ -350,8 +373,10 @@ def parse_all(soup: BeautifulSoup) -> dict:
     full_text = soup.get_text(" ", strip=True)
 
     cur  = extract_current_price(soup, full_text)
-    orig = extract_original_price(soup, full_text, cur)
-    disc = extract_discount(soup, full_text, cur, orig)
+    disc = extract_discount(soup, full_text, cur, "")
+    orig = extract_original_price(soup, full_text, cur, disc)
+    if not disc:
+        disc = extract_discount(soup, full_text, cur, orig)
     rat  = extract_rating(soup, full_text)
     revs = extract_reviews(soup, full_text, rat)
 
@@ -464,3 +489,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
