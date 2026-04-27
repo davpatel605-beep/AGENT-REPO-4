@@ -203,12 +203,38 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
         if is_valid(val):
             return val
 
-    # 6. Largest ₹ price on page (MRP is always highest)
-    all_prices = re.findall(r"[₹Rs\.]\s*([\d,]{3,})", full_text)
+    # 6. Find price block near Add to cart -- MRP appears with current price
+    cur_int = int(current_price) if current_price and current_price.isdigit() else 0
+    cart_tag = soup.find(string=re.compile(r"Add to cart", re.I))
+    if cart_tag:
+        parent = cart_tag.find_parent("div")
+        for _ in range(10):
+            if not parent:
+                break
+            block_text = parent.get_text(" ", strip=True)
+            all_nums = re.findall(r"[\d,]{4,}", block_text)
+            candidates = sorted([
+                int(n.replace(",", "")) for n in all_nums
+                if valid_price(n.replace(",", "")) and int(n.replace(",", "")) > cur_int
+            ])
+            if candidates:
+                # Pick smallest number > current (that is the real MRP, not inflated)
+                return str(candidates[0])
+            parent = parent.find_parent("div")
+
+    # 7. Number appearing just before current price in text
+    if current_price:
+        m = re.search(r"([\d,]{3,})\D{0,5}" + re.escape(current_price), full_text)
+        if m:
+            val = m.group(1).replace(",", "")
+            if is_valid(val):
+                return val
+
+    # 8. Strictly ₹ symbol prices only -- largest is MRP
+    all_prices = re.findall(r"₹\s*([\d,]{4,})", full_text)
     valid_list = sorted([
         int(p.replace(",", "")) for p in all_prices if valid_price(p.replace(",", ""))
     ], reverse=True)
-    cur_int = int(current_price) if current_price and current_price.isdigit() else 0
     for p in valid_list:
         if p > cur_int:
             return str(p)
