@@ -2,25 +2,14 @@
 update_gaming_cpu.py  --  Visual Pattern Based Extraction
 Table: gaming cpu
 
-Visual patterns from Flipkart product page:
-  Rating    : "4.1" (decimal near star)
-  Reviews   : number after | separator near rating e.g. "| 56,770"
-  Discount  : down-arrow + number + % e.g. "↓54%"
-  Orig Price: strikethrough lighter number e.g. "74,999" (crossed out)
-  Curr Price: bold large number near "Buy at" e.g. "₹13,260"
-
-Strategy:
-  - Attempt 1  : cheap fetch, basic extraction
-  - Attempt 2  : cheap fetch, aggressive text scan
-  - Attempt 3  : render fetch, full extraction
-  - Attempt 4-5: render + wait, brute force all patterns
-
-NO strict cross-validation that clears data.
-Only soft check: current < original (if both present).
+Fixed: Original Price uses JSON-LD + <s> tag
+Fixed: Discount uses down-arrow unicode pattern
+Cross-validation restored (soft only).
 """
 
 import os
 import re
+import json
 import time
 import logging
 import requests
@@ -83,8 +72,7 @@ def safe(tag, d=""):
 
 
 def to_num(text: str) -> str:
-    """Remove all non-digit chars and return string."""
-    return re.sub(r"[^\d]", "", text)
+    return re.sub(r"[^\d]", "", text).strip()
 
 
 def valid_price(val: str) -> bool:
@@ -92,7 +80,6 @@ def valid_price(val: str) -> bool:
 
 
 def parse_k(text: str) -> str:
-    """'56k'->56000, '1.2k'->1200, '56,770'->56770"""
     t = text.strip().replace(",", "")
     m = re.match(r"([\d.]+)[kK]", t)
     if m:
@@ -102,16 +89,7 @@ def parse_k(text: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXTRACTION FUNCTIONS — each focused on one visual pattern
-# ─────────────────────────────────────────────────────────────────────────────
-
 def extract_current_price(soup: BeautifulSoup, full_text: str) -> str:
-    """
-    Current price = bold large ₹ number near Buy button.
-    Flipkart shows: ↓54%  ~~74,999~~  ₹13,260
-    The rightmost / last price near buy button is current price.
-    """
-    # Method 1: known CSS selectors
     for sel in [
         "div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0",
         "div.v1zwn21l.v1zwn24._1psv1zeb9._1psv1ze0",
@@ -120,7 +98,6 @@ def extract_current_price(soup: BeautifulSoup, full_text: str) -> str:
         "div._30jeq3._16Jk6d",
         "div._30jeq3",
         "div.CEmiEU",
-        "div.dyC4hf",
     ]:
         tag = soup.select_one(sel)
         if tag:
@@ -128,49 +105,74 @@ def extract_current_price(soup: BeautifulSoup, full_text: str) -> str:
             if val and valid_price(val):
                 return val
 
-    # Method 2: "Buy at ₹X,XXX" pattern
-    m = re.search(r"Buy\s*at\s*₹\s*([\d,]+)", full_text)
+    m = re.search(r"Buy\s*at\s*[₹Rs\.]+\s*([\d,]+)", full_text, re.I)
     if m:
         val = m.group(1).replace(",", "")
         if valid_price(val):
             return val
 
-    # Method 3: find all ₹ prices on page, pick the one near "Add to cart"
-    cart_section = soup.find(string=re.compile(r"Add to cart", re.I))
-    if cart_section:
-        parent = cart_section.find_parent("div")
-        for _ in range(5):
+    cart_tag = soup.find(string=re.compile(r"Add to cart", re.I))
+    if cart_tag:
+        parent = cart_tag.find_parent("div")
+        for _ in range(6):
             if parent:
-                prices = re.findall(r"₹\s*([\d,]+)", parent.get_text())
-                valid_prices = sorted(
-                    [int(p.replace(",", "")) for p in prices if valid_price(p.replace(",", ""))]
-                )
-                if valid_prices:
-                    return str(valid_prices[0])  # smallest = current price
+                prices = re.findall(r"[₹Rs\.]+\s*([\d,]+)", parent.get_text())
+                valid_list = sorted([
+                    int(p.replace(",", "")) for p in prices
+                    if valid_price(p.replace(",", ""))
+                ])
+                if valid_list:
+                    return str(valid_list[0])
                 parent = parent.find_parent("div")
-
-    # Method 4: regex scan — find ₹X,XXX pattern, return smallest valid price
-    all_prices = re.findall(r"₹\s*([\d,]{3,})", full_text)
-    valid_list = sorted([
-        int(p.replace(",", "")) for p in all_prices
-        if valid_price(p.replace(",", ""))
-    ])
-    # Return smallest (current price is always less than MRP)
-    # But filter out very small numbers
-    for p in valid_list:
-        if p >= 1000:
-            return str(p)
 
     return ""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: str) -> str:
     """
-    Original price = strikethrough number (MRP).
-    Flipkart shows it lighter with a line through it.
-    It is ALWAYS greater than current price.
+    Original price = strikethrough MRP.
+    Best sources (in order of reliability):
+      1. JSON-LD structured data
+      2. <s> HTML tag (direct strikethrough element)
+      3. CSS class selectors
+      4. style=line-through tags
+      5. MRP keyword
+      6. Largest price on page
     """
-    # Method 1: known CSS selectors for strikethrough price
+    def is_valid(val: str) -> bool:
+        if not val or not valid_price(val):
+            return False
+        if current_price and current_price.isdigit():
+            return int(val) > int(current_price)
+        return True
+
+    # 1. JSON-LD structured data
+    for script in soup.find_all("script", {"type": "application/ld+json"}):
+        try:
+            obj = json.loads(script.string or "")
+            items = obj if isinstance(obj, list) else [obj]
+            for item in items:
+                offers = item.get("offers", {})
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else {}
+                for key in ["highPrice", "originalPrice", "listPrice", "price"]:
+                    raw = str(offers.get(key, ""))
+                    val = to_num(raw)
+                    if is_valid(val):
+                        log.info(f"   [JSON-LD:{key}] orig={val}")
+                        return val
+        except Exception:
+            pass
+
+    # 2. <s> tag = HTML strikethrough (MOST DIRECT visual match)
+    for s_tag in soup.find_all("s"):
+        val = to_num(safe(s_tag))
+        if is_valid(val):
+            log.info(f"   [<s>tag] orig={val}")
+            return val
+
+    # 3. CSS class selectors
     for sel in [
         "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
         "div.v1zwn21m._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
@@ -182,34 +184,31 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
         tag = soup.select_one(sel)
         if tag:
             val = to_num(safe(tag))
-            if val and valid_price(val):
-                if not current_price or int(val) > int(current_price):
-                    return val
+            if is_valid(val):
+                return val
 
-    # Method 2: tags with line-through style
+    # 4. style=line-through
     for tag in soup.find_all(True):
         style   = tag.get("style", "")
         classes = " ".join(tag.get("class", []))
-        if "line-through" in style or "linethrough" in classes.lower() or "strike" in classes.lower():
+        if "line-through" in style or "strike" in classes.lower():
             val = to_num(safe(tag))
-            if val and valid_price(val):
-                if not current_price or int(val) > int(current_price):
-                    return val
-
-    # Method 3: MRP keyword in text
-    m = re.search(r"M\.?R\.?P\.?\s*:?\s*₹?\s*([\d,]+)", full_text, re.I)
-    if m:
-        val = m.group(1).replace(",", "")
-        if valid_price(val):
-            if not current_price or int(val) > int(current_price):
+            if is_valid(val):
                 return val
 
-    # Method 4: find largest price on page (MRP is largest)
-    all_prices = re.findall(r"₹\s*([\d,]{3,})", full_text)
+    # 5. MRP keyword
+    m = re.search(r"M\.?R\.?P\.?\s*:?\s*[₹Rs\.]*\s*([\d,]+)", full_text, re.I)
+    if m:
+        val = m.group(1).replace(",", "")
+        if is_valid(val):
+            return val
+
+    # 6. Largest ₹ price on page (MRP is always highest)
+    all_prices = re.findall(r"[₹Rs\.]\s*([\d,]{3,})", full_text)
     valid_list = sorted([
         int(p.replace(",", "")) for p in all_prices if valid_price(p.replace(",", ""))
     ], reverse=True)
-    cur_int = int(current_price) if current_price else 0
+    cur_int = int(current_price) if current_price and current_price.isdigit() else 0
     for p in valid_list:
         if p > cur_int:
             return str(p)
@@ -217,145 +216,133 @@ def extract_original_price(soup: BeautifulSoup, full_text: str, current_price: s
     return ""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 def extract_discount(soup: BeautifulSoup, full_text: str, cur: str, orig: str) -> str:
     """
-    Discount = down-arrow + number + % e.g. ↓54% or 54% off
+    Discount = down-arrow(↓) + number(1-99) + percent(%)
+    This is directly visible on page: ↓54%
     """
-    # Method 1: down arrow patterns (↓ ↘ ▼)
-    m = re.search(r"[↓↘▼⬇]\s*(\d{1,2})\s*%", full_text)
+    # 1. Down arrow unicode + number + % (exact visual pattern)
+    m = re.search(r"[\u2193\u2198\u25bc\u2b07\u21a1]\s*(\d{1,2})\s*%", full_text)
     if m and 1 <= int(m.group(1)) <= 99:
+        log.info(f"   [arrow] disc={m.group(1)}%")
         return m.group(1) + "%"
 
-    # Method 2: known selector
+    # 2. Known CSS selector
     tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
     if tag:
         m = re.search(r"(\d{1,2})%", safe(tag))
         if m and 1 <= int(m.group(1)) <= 99:
             return m.group(1) + "%"
 
-    # Method 3: "X% off" pattern in short text
+    # 3. Short element with "X% off"
     for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
-        if len(text) > 25:
+        if len(text) > 20:
             continue
-        m = re.search(r"(\d{1,2})%\s*off", text, re.I)
+        m = re.search(r"(\d{1,2})%\s*(off)?$", text, re.I)
         if m and 1 <= int(m.group(1)) <= 99:
             return m.group(1) + "%"
 
-    # Method 4: calculate from prices
+    # 4. Scan full text for standalone X% near price context
+    for m in re.finditer(r"\b(\d{1,2})%\b", full_text):
+        val = int(m.group(1))
+        if 5 <= val <= 99:
+            # Check surrounding context has price-related words
+            start = max(0, m.start() - 30)
+            end   = min(len(full_text), m.end() + 30)
+            context = full_text[start:end]
+            if any(k in context for k in ["₹", "off", "discount", "save", "price"]):
+                return str(val) + "%"
+
+    # 5. Auto-calculate from prices
     if cur and orig and cur.isdigit() and orig.isdigit():
         c, o = int(cur), int(orig)
         if o > c > 0:
             disc = round((o - c) / o * 100)
             if 1 <= disc <= 99:
-                log.info(f"   [AUTO] Discount = {disc}%")
+                log.info(f"   [AUTO] disc={disc}%")
                 return str(disc) + "%"
 
     return ""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 def extract_rating(soup: BeautifulSoup, full_text: str) -> str:
-    """
-    Rating = decimal like "4.1" near star symbol ★
-    Always between 1.0 and 5.0
-    """
-    # Method 1: exact decimal in any tag
     for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
         if re.fullmatch(r"[1-5]\.\d", text):
             return text
 
-    # Method 2: near star symbol in full text
     m = re.search(r"([1-5]\.\d)\s*[★✩⭐|]|[★✩⭐]\s*([1-5]\.\d)", full_text)
     if m:
         return m.group(1) or m.group(2)
 
-    # Method 3: "X.X out of 5" pattern
     m = re.search(r"([1-5]\.\d)\s*out\s*of\s*5", full_text, re.I)
     if m:
         return m.group(1)
 
-    # Method 4: standalone decimal in rating-class tags
-    for tag in soup.find_all(["div", "span"]):
-        classes = " ".join(tag.get("class", []))
-        if any(k in classes for k in ["XQDdHH", "_3LWZlK", "ipqd2A", "Y1HWO0", "rating"]):
-            text = safe(tag).strip()
-            m = re.search(r"([1-5]\.?\d?)", text)
-            if m:
-                return m.group(1)
-
     return ""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 def extract_reviews(soup: BeautifulSoup, full_text: str, rating: str) -> str:
-    """
-    Reviews = number right after rating separated by | e.g. "4.1 ★ | 56,770"
-    May have k suffix: "56k" = 56000
-    """
-    # Method 1: known selector
-    for sel in [
-        "div._1psv1zeb9._1psv1ze0._1psv1zegu",
-        "span.Wphh3N",
-        "span._2_R_DZ",
-    ]:
+    for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zegu", "span.Wphh3N", "span._2_R_DZ"]:
         tag = soup.select_one(sel)
         if tag:
-            text = safe(tag)
-            nums = re.findall(r"[\d,]+[kK]?", text)
+            nums = re.findall(r"[\d,]+[kK]?", safe(tag))
             if nums:
                 return parse_k(nums[0])
 
-    # Method 2: pattern right after rating "4.1 | 56,770"
     if rating:
-        pattern = re.escape(rating) + r"\s*[★✩⭐]?\s*[|,]\s*([\d,]+[kK]?)"
-        m = re.search(pattern, full_text)
+        m = re.search(re.escape(rating) + r"\s*[★✩⭐]?\s*[|,]\s*([\d,]+[kK]?)", full_text)
         if m:
             return parse_k(m.group(1))
 
-    # Method 3: "X Ratings" or "X Reviews" or "X verified"
     for pattern in [
         r"([\d,]+[kK]?)\s+[Rr]ating",
         r"([\d,]+[kK]?)\s+[Rr]eview",
-        r"([\d,]+[kK]?)\s+[Vv]erified",
         r"based on\s+([\d,]+[kK]?)\s+rating",
     ]:
         m = re.search(pattern, full_text, re.I)
         if m:
-            return parse_k(m.group(1))
+            val = parse_k(m.group(1))
+            if val.isdigit() and int(val) >= 5:
+                return val
 
-    # Method 4: number immediately after rating in full text
     if rating:
         m = re.search(re.escape(rating) + r"[^\d]{1,15}([\d,]{2,}[kK]?)", full_text)
         if m:
             val = parse_k(m.group(1))
-            if val.isdigit() and int(val) >= 10:
+            if val.isdigit() and int(val) >= 5:
                 return val
 
     return ""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 def parse_all(soup: BeautifulSoup) -> dict:
     full_text = soup.get_text(" ", strip=True)
 
-    cur   = extract_current_price(soup, full_text)
-    orig  = extract_original_price(soup, full_text, cur)
-    disc  = extract_discount(soup, full_text, cur, orig)
-    rat   = extract_rating(soup, full_text)
-    revs  = extract_reviews(soup, full_text, rat)
+    cur  = extract_current_price(soup, full_text)
+    orig = extract_original_price(soup, full_text, cur)
+    disc = extract_discount(soup, full_text, cur, orig)
+    rat  = extract_rating(soup, full_text)
+    revs = extract_reviews(soup, full_text, rat)
 
-    # Soft sanity: if current >= original, clear original only
-    if cur and orig and int(cur) >= int(orig):
-        log.warning(f"   SOFT SANITY: cur({cur}) >= orig({orig}) -- clearing original only")
-        orig = ""
+    # Soft validation: current must be less than original
+    if cur and orig and cur.isdigit() and orig.isdigit():
+        if int(cur) >= int(orig):
+            log.warning(f"   SOFT SANITY: cur({cur}) >= orig({orig}) -- clearing orig")
+            orig = ""
 
-    data = {
+    return {
         "Current Price":     cur,
         "Original Price":    orig,
         "Discount":          disc,
         "Rating":            rat,
         "Number of Reviews": revs,
     }
-    return data
 
 
 def missing_fields(data: dict) -> list[str]:
@@ -380,7 +367,7 @@ def update_row(client: Client, product_link: str, data: dict) -> bool:
 
 def main():
     log.info("=" * 70)
-    log.info(f"  Flipkart Updater -- {TABLE_NAME} -- Visual Pattern Mode")
+    log.info(f"  Flipkart Updater -- {TABLE_NAME}")
     log.info("=" * 70)
 
     client   = get_client()
@@ -398,7 +385,6 @@ def main():
         log.info(f"[{idx}/{total}]  {url[:85]}")
         log.info(f"{'─'*60}")
 
-        # Merge best data across all attempts
         best = {}
 
         for attempt in range(1, TOTAL_ATTEMPTS + 1):
@@ -412,17 +398,16 @@ def main():
             data = parse_all(soup)
             log.info(f"   Got: {data}")
 
-            # Merge: keep non-empty values from each attempt
+            # Merge -- keep non-empty values
             for field, val in data.items():
                 if val and not best.get(field):
                     best[field] = val
 
-            missing = missing_fields(best)
-            if not missing:
+            if not missing_fields(best):
                 log.info(f"   All fields found on attempt {attempt}.")
                 break
 
-            log.warning(f"   Still missing: {missing}")
+            log.warning(f"   Still missing: {missing_fields(best)}")
             time.sleep(2)
 
         log.info(f"   FINAL: {best}")
@@ -437,7 +422,7 @@ def main():
                 updated += 1
             elif ok:
                 partial += 1
-                log.warning(f"   Partial update. Missing: {missing}")
+                log.warning(f"   Partial. Missing: {missing}")
             else:
                 db_failed += 1
 
@@ -454,4 +439,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
