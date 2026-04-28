@@ -1,0 +1,47 @@
+name: Master Flipkart Updater — All Tables
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # Daily 7:30 AM IST
+  workflow_dispatch:
+
+jobs:
+  update-all-tables:
+    name: Scrape Flipkart & Update All Supabase Tables
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run master_updater.py
+        env:
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          SCRAPERAPI_KEY:    ${{ secrets.SCRAPERAPI_KEY }}
+          SCRAPERAPI_KEY_2:  ${{ secrets.SCRAPERAPI_KEY_2 }}
+          SCRAPERAPI_KEY_3:  ${{ secrets.SCRAPERAPI_KEY_3 }}
+          SCRAPERAPI_KEY_4:  ${{ secrets.SCRAPERAPI_KEY_4 }}
+          SCRAPERAPI_KEY_5:  ${{ secrets.SCRAPERAPI_KEY_5 }}
+          SCRAPERAPI_KEY_6:  ${{ secrets.SCRAPERAPI_KEY_6 }}
+        run: python master_updater.py
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: master-log-${{ github.run_number }}
+          path: "*.log"
+          if-no-files-found: ignore
+          retention-days: 7
+
