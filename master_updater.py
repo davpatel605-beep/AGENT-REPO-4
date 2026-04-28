@@ -59,7 +59,7 @@ TABLES = [
             "original_price": "Discounted Price",
             "discount":       "Discount Percentage",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -70,8 +70,8 @@ TABLES = [
             "original_price": "Discounted Price",
             "discount":       "Discount Percentage",
             "rating":         "Product Rating",
-            "reviews":        "Number Of Reviews",
-            "reviews2":       "Number Of Rating",
+            "reviews":        "Number of Reviews",
+            "reviews2":       "Number of Rating",
         },
     },
     {
@@ -82,7 +82,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -103,7 +103,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -114,7 +114,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
