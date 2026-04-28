@@ -458,20 +458,63 @@ def extract_rating(soup: BeautifulSoup, full_text: str) -> str:
 
 def extract_reviews(soup: BeautifulSoup, full_text: str, rating: str) -> str:
     """
-    Reviews visual pattern: "3.7 ★ | 239"
-    Number right after | pipe next to star = review count.
+    Reviews visual pattern: "1.5 ★ | 4"
+    The number right after | pipe (next to star) = review count.
+
+    HTML structure on Flipkart:
+      <div>1.5 <span>★</span></div><span>|</span><span>4</span>
+      OR all in one tag: "1.5 ★ | 4"
+    
+    Strategy: Find the | pipe symbol, take the number right after it
+    that appears near the rating value.
     """
-    # Method 1: any tag containing "X.X ★ | number" pattern
+
+    # ── Method 1: Find pipe | and take number immediately after it ────────────
+    # Scan every tag for pipe symbol, then get the number right after
     for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
+        # Pattern: "X.X ★ | NUMBER" or "X.X | NUMBER"
         m = re.search(r"[1-5]\.\d\s*[★✩⭐]?\s*\|\s*([\d,]+)", text)
         if m:
             val = m.group(1).replace(",", "")
-            if val.isdigit() and int(val) >= 2:
-                log.info(f"   [★|tag] reviews={val}")
+            if val.isdigit() and int(val) >= 1:
+                log.info(f"   [★|inline] reviews={val}")
                 return val
 
-    # Method 2: using known rating value
+    # ── Method 2: Find | pipe tag, then get the NEXT sibling tag's number ─────
+    # Handles: <span>1.5 ★</span> <span>|</span> <span>4</span>
+    for pipe_tag in soup.find_all(string=re.compile(r"^\s*\|\s*$")):
+        next_sib = pipe_tag.find_next(["span", "div"])
+        if next_sib:
+            val = to_num(safe(next_sib))
+            if val.isdigit() and int(val) >= 1:
+                log.info(f"   [|sibling] reviews={val}")
+                return val
+
+    # ── Method 3: Find rating tag, then look at next sibling for number ───────
+    if rating:
+        for tag in soup.find_all(["div", "span"]):
+            if safe(tag).strip() == rating:
+                # Look at siblings after this tag
+                parent = tag.parent
+                if parent:
+                    siblings = list(parent.children)
+                    found_rating = False
+                    for sib in siblings:
+                        if hasattr(sib, "get_text"):
+                            sib_text = sib.get_text(strip=True)
+                        else:
+                            sib_text = str(sib).strip()
+                        if rating in sib_text:
+                            found_rating = True
+                            continue
+                        if found_rating and sib_text and sib_text != "|":
+                            val = re.sub(r"[^\d]", "", sib_text)
+                            if val.isdigit() and int(val) >= 1:
+                                log.info(f"   [rating-sibling] reviews={val}")
+                                return val
+
+    # ── Method 4: Scan full text for "rating | number" pattern ───────────────
     if rating:
         for pat in [
             re.escape(rating) + r"\s*[★✩⭐]\s*\|\s*([\d,]+)",
@@ -481,11 +524,11 @@ def extract_reviews(soup: BeautifulSoup, full_text: str, rating: str) -> str:
             m = re.search(pat, full_text)
             if m:
                 val = m.group(1).replace(",", "")
-                if val.isdigit() and int(val) >= 2:
-                    log.info(f"   [rating|] reviews={val}")
+                if val.isdigit() and int(val) >= 1:
+                    log.info(f"   [fulltext-pat] reviews={val}")
                     return val
 
-    # Method 3: CSS selectors
+    # ── Method 5: CSS selectors ───────────────────────────────────────────────
     for sel in [
         "div._1psv1zeb9._1psv1ze0._1psv1zegu",
         "span.Wphh3N", "span._2_R_DZ", "span._13vcmD",
@@ -495,10 +538,10 @@ def extract_reviews(soup: BeautifulSoup, full_text: str, rating: str) -> str:
             nums = re.findall(r"[\d,]+", safe(tag))
             for n in nums:
                 val = n.replace(",", "")
-                if val.isdigit() and int(val) >= 2:
+                if val.isdigit() and int(val) >= 1:
                     return val
 
-    # Method 4: text patterns
+    # ── Method 6: Text patterns ───────────────────────────────────────────────
     for pattern in [
         r"([\d,]+[kK]?)\s+[Rr]ating",
         r"([\d,]+[kK]?)\s+[Rr]eview",
@@ -507,29 +550,15 @@ def extract_reviews(soup: BeautifulSoup, full_text: str, rating: str) -> str:
         m = re.search(pattern, full_text, re.I)
         if m:
             val = parse_k(m.group(1))
-            if val.isdigit() and int(val) >= 2:
+            if val.isdigit() and int(val) >= 1:
                 return val
 
-    # Method 5: pipe split in tag containing both rating and reviews
+    # ── Method 7: number right after rating in text ───────────────────────────
     if rating:
-        for tag in soup.find_all(["div", "span"]):
-            text = safe(tag).strip()
-            if rating in text and "|" in text:
-                parts = text.split("|")
-                for part in parts:
-                    p = part.strip()
-                    if p != rating and re.match(r"[\d,]+$", p):
-                        val = p.replace(",", "")
-                        if val.isdigit() and int(val) >= 2:
-                            log.info(f"   [PIPE-SPLIT] reviews={val}")
-                            return val
-
-    # Method 6: number right after rating in text
-    if rating:
-        m = re.search(re.escape(rating) + r"[^\d]{1,10}([\d,]{2,})", full_text)
+        m = re.search(re.escape(rating) + r"[^\d]{1,15}([\d,]{1,})", full_text)
         if m:
             val = m.group(1).replace(",", "")
-            if val.isdigit() and int(val) >= 2:
+            if val.isdigit() and int(val) >= 1:
                 return val
 
     return ""
