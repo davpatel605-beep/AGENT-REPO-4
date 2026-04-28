@@ -1,21 +1,10 @@
 """
 master_updater.py — Universal Flipkart Price Updater
-All 11 tables in one run.
+Starts from: gaming pc (gaming cpu already done)
+Tables: gaming pc, induction, iphone, keybord, laptop,
+        monitar, mouse, smart phone, smart+tv, smartwatch
 
-Strategy per product:
-  Pass 1 (CHEAP  - 1 credit)  : Current Price + Discount + Original Price
-  Pass 2 (RENDER - 25 credits): Rating + Reviews (ONLY if missing from Pass 1)
-
-Math fallbacks (if scraping fails):
-  cur + disc  -> orig = cur / (1 - disc/100)
-  orig + disc -> cur  = orig * (1 - disc/100)
-  cur + orig  -> disc = (orig - cur) / orig * 100
-
-API Key rotation: auto-switches to next key on 401/403.
-
-Environment Variables:
-  SUPABASE_URL, SUPABASE_KEY
-  SCRAPERAPI_KEY, SCRAPERAPI_KEY_2 ... SCRAPERAPI_KEY_6
+Column names: Title Case (every word first letter capital)
 """
 
 import os, re, json, time, logging, requests
@@ -30,7 +19,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Credentials ───────────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 
@@ -40,52 +28,38 @@ for i in ["", "_2", "_3", "_4", "_5", "_6"]:
     if k:
         SCRAPERAPI_KEYS.append(k)
 
-current_key_idx = 0
+cur_key_idx = 0
 
 def get_key():
-    return SCRAPERAPI_KEYS[current_key_idx] if SCRAPERAPI_KEYS else ""
+    return SCRAPERAPI_KEYS[cur_key_idx] if SCRAPERAPI_KEYS else ""
 
 def rotate_key():
-    global current_key_idx
-    if current_key_idx < len(SCRAPERAPI_KEYS) - 1:
-        current_key_idx += 1
-        log.warning(f"   [KEY] Rotated to key #{current_key_idx + 1}")
+    global cur_key_idx
+    if cur_key_idx < len(SCRAPERAPI_KEYS) - 1:
+        cur_key_idx += 1
+        log.warning(f"   [KEY] Rotated to key #{cur_key_idx+1}")
         return True
     log.error("   [KEY] All keys exhausted!")
     return False
 
-ENDPOINT       = "https://api.scraperapi.com/"
+ENDPOINT        = "https://api.scraperapi.com/"
 REQUEST_TIMEOUT = 90
 DELAY           = 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TABLE CONFIGS
-# Defines column mapping for each table.
-# Keys: current_price, original_price, discount, rating, reviews, combined, link
-# "combined" = Rating and Reviews stored in ONE column as "4.1 ★ | 239"
+# TABLE CONFIG — exact Supabase column names (Title Case)
 # ══════════════════════════════════════════════════════════════════════════════
 TABLES = [
-    {
-        "name": "gaming cpu",
-        "link": "Product Link",
-        "cols": {
-            "current_price":  "Current Price",
-            "original_price": "Original Price",
-            "discount":       "Discount",
-            "rating":         "Rating",
-            "reviews":        "Number of Reviews",
-        },
-    },
     {
         "name": "gaming pc",
         "link": "Product Link",
         "cols": {
-            "current_price":  "price",
+            "current_price":  "Price",
             "original_price": "Original Price-2",
             "discount":       "Discount-2",
             "rating":         "Product Rating",
-            "reviews":        "product review",
+            "reviews":        "Product Review",
         },
     },
     {
@@ -94,9 +68,9 @@ TABLES = [
         "cols": {
             "current_price":  "Price",
             "original_price": "Discount Price",
-            "discount":       "Discount percentage",
+            "discount":       "Discount Percentage",
             "rating":         "Rating",
-            "reviews":        "Number of reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -107,8 +81,8 @@ TABLES = [
             "original_price": "Discounted Price",
             "discount":       "Discount Percentage",
             "rating":         "Product Rating",
-            "reviews":        "Number of Reviews",
-            "reviews2":       "Number of Rating",
+            "reviews":        "Number Of Reviews",
+            "reviews2":       "Number Of Rating",
         },
     },
     {
@@ -119,7 +93,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -129,7 +103,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating and Reviews",
+            "combined":       "Rating And Reviews",
         },
     },
     {
@@ -140,7 +114,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -151,7 +125,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -161,7 +135,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating and Reviews",
+            "combined":       "Rating And Reviews",
         },
     },
     {
@@ -171,7 +145,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Ratings and Reviews",
+            "combined":       "Ratings And Reviews",
         },
     },
     {
@@ -203,12 +177,11 @@ def fetch(url: str, render: bool = False) -> BeautifulSoup | None:
     try:
         resp = requests.get(f"{ENDPOINT}?{urlencode(params)}", timeout=REQUEST_TIMEOUT)
         if resp.status_code in (401, 403):
-            log.warning(f"   [{mode}] Key limit — rotating...")
             if rotate_key():
                 return fetch(url, render)
             return None
         resp.raise_for_status()
-        log.info(f"   [{mode}] HTTP {resp.status_code}  bytes={len(resp.text)}")
+        log.info(f"   [{mode}] HTTP {resp.status_code}")
         return BeautifulSoup(resp.text, "html.parser")
     except Exception as exc:
         log.error(f"   [{mode}] {exc}")
@@ -236,10 +209,9 @@ def parse_k(t):
     return m.group(1) if m else ""
 
 def fmt_price(v):
-    """Convert '13902' -> '₹13,902'"""
     if not v or not v.isdigit():
         return v
-    n, s = int(v), str(int(v))
+    s = str(int(v))
     if len(s) <= 3:
         return f"₹{s}"
     result, s = s[-3:], s[:-3]
@@ -306,21 +278,19 @@ def get_discount(soup, ft):
 
 def get_original_price(soup, ft, cur, disc):
     def ok(v):
-        if not v or not valid_price(v):
-            return False
+        if not v or not valid_price(v): return False
         return int(v) > int(cur) if cur and cur.isdigit() else True
 
     # Math first (5% tolerance, only ₹ prices)
     if cur and cur.isdigit() and disc:
         d = disc.replace("%","").strip()
         if d.isdigit() and 1 <= int(d) <= 99:
-            expected = int(cur) / (1 - int(d)/100)
+            exp = int(cur) / (1 - int(d)/100)
             best_v, best_diff = "", float("inf")
             for p in re.findall(r"₹\s*([\d,]+)", ft):
                 v = p.replace(",","")
-                if not v.isdigit() or not valid_price(v) or int(v) <= int(cur):
-                    continue
-                diff = abs(int(v) - expected) / expected
+                if not v.isdigit() or not valid_price(v) or int(v) <= int(cur): continue
+                diff = abs(int(v) - exp) / exp
                 if diff < best_diff and diff <= 0.05:
                     best_diff, best_v = diff, v
             if best_v:
@@ -345,8 +315,11 @@ def get_original_price(soup, ft, cur, disc):
         if ok(v): return v
 
     # CSS selectors
-    for sel in ["div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
-                "div.yRaY8j.ZYYwLA","div.yRaY8j","div._3I9_wc._2p6lqe","div._3I9_wc"]:
+    for sel in [
+        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
+        "div.yRaY8j.ZYYwLA","div.yRaY8j",
+        "div._3I9_wc._2p6lqe","div._3I9_wc",
+    ]:
         tag = soup.select_one(sel)
         if tag:
             v = to_num(safe(tag))
@@ -358,50 +331,69 @@ def get_original_price(soup, ft, cur, disc):
             v = to_num(safe(tag))
             if ok(v): return v
 
-    # Number just before current price in text
+    # Number just before current price
     if cur:
         pos = ft.find(cur)
         if pos > 30:
-            window = ft[max(0,pos-150):pos]
-            for c in reversed(re.findall(r"₹\s*([\d,]+)", window)):
+            for c in reversed(re.findall(r"₹\s*([\d,]+)", ft[max(0,pos-150):pos])):
                 v = c.replace(",","")
                 if ok(v): return v
     return ""
 
 
-def get_rating_and_reviews(soup, ft):
-    rating, reviews = "", ""
+def get_rating_reviews(soup, ft):
+    """
+    Extract rating and reviews.
+    Pattern: "3.7 ★ | 239"
+    
+    Key insight: Rating tag (e.g. "3.7") and review count ("239")
+    are siblings inside the same parent container.
+    Find rating tag → scan siblings for a pure number → that is reviews.
+    """
+    rating  = ""
+    reviews = ""
 
-    # Rating: find exact decimal tag
-    for tag in soup.find_all(["div","span"]):
+    # ── Rating ────────────────────────────────────────────────────────────────
+    rating_tag = None
+    for tag in soup.find_all(["div", "span"]):
         t = safe(tag).strip()
         if re.fullmatch(r"[1-5]\.\d", t):
-            rating = t
+            rating     = t
+            rating_tag = tag
             break
+
     if not rating:
         m = re.search(r"([1-5]\.\d)\s*[★✩⭐|]", ft)
         if m: rating = m.group(1)
 
-    # Reviews — DOM parent method (most reliable)
-    if rating:
-        for tag in soup.find_all(["div","span"]):
-            if safe(tag).strip() == rating:
-                parent = tag.parent
-                if parent:
-                    for child in parent.descendants:
-                        t = child.get_text(strip=True) if hasattr(child,"get_text") else str(child).strip()
-                        if t and t != rating and t not in ["★","✩","⭐","|",""]:
-                            v = t.replace(",","")
-                            if v.isdigit() and int(v) >= 1:
-                                reviews = v
-                                log.info(f"   [DOM-PARENT] reviews={v}")
-                                break
-                if reviews: break
+    # ── Reviews: scan rating tag siblings up to 3 parent levels ──────────────
+    if rating_tag:
+        node = rating_tag
+        for level in range(4):   # go up to 3 levels
+            node = node.parent
+            if not node: break
 
-    # Reviews — pipe | next sibling
+            # Collect all pure-digit text nodes in this container
+            pure_numbers = []
+            for child in node.descendants:
+                t = child.get_text(strip=True) if hasattr(child, "get_text") else str(child).strip()
+                # Must be ONLY digits (and optional commas) — no letters
+                clean = t.replace(",", "").replace(" ", "")
+                if clean.isdigit() and int(clean) >= 1 and clean != to_num(rating):
+                    pure_numbers.append(clean)
+
+            # Filter: reviews is NOT the current/original price (too large)
+            # Reviews is typically < 10,000,000 and >= 1
+            candidates = [n for n in pure_numbers if 1 <= int(n) <= 9999999]
+            if candidates:
+                reviews = candidates[0]
+                log.info(f"   [DOM-LVL{level}] reviews={reviews}")
+                break
+
+    # ── Fallback: pipe | next sibling ────────────────────────────────────────
     if not reviews:
         for pipe in soup.find_all(string=re.compile(r"^\s*\|\s*$")):
-            nxt = pipe.find_next(["span","div"])
+            nxt = pipe.find_next(["span", "div"])
             if nxt:
                 v = to_num(safe(nxt))
                 if v.isdigit() and int(v) >= 1:
@@ -409,9 +401,9 @@ def get_rating_and_reviews(soup, ft):
                     log.info(f"   [PIPE-NEXT] reviews={v}")
                     break
 
-    # Reviews — inline pattern "4.1 ★ | 239"
+    # ── Fallback: inline pattern ──────────────────────────────────────────────
     if not reviews:
-        for tag in soup.find_all(["div","span"]):
+        for tag in soup.find_all(["div", "span"]):
             t = safe(tag).strip()
             m = re.search(r"[1-5]\.\d\s*[★✩⭐]?\s*\|\s*([\d,]+)", t)
             if m:
@@ -421,7 +413,7 @@ def get_rating_and_reviews(soup, ft):
                     log.info(f"   [INLINE] reviews={v}")
                     break
 
-    # Reviews — full text patterns
+    # ── Fallback: full text pattern ───────────────────────────────────────────
     if not reviews and rating:
         for pat in [
             re.escape(rating) + r"\s*[★✩⭐]\s*\|\s*([\d,]+)",
@@ -435,7 +427,7 @@ def get_rating_and_reviews(soup, ft):
                     reviews = v
                     break
 
-    # Reviews — CSS selectors
+    # ── Fallback: CSS selectors ───────────────────────────────────────────────
     if not reviews:
         for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zegu",
                     "span.Wphh3N","span._2_R_DZ","span._13vcmD"]:
@@ -448,7 +440,7 @@ def get_rating_and_reviews(soup, ft):
                         break
             if reviews: break
 
-    # Reviews — keyword patterns
+    # ── Fallback: keyword patterns ────────────────────────────────────────────
     if not reviews:
         for pat in [r"([\d,]+[kK]?)\s+[Rr]ating",
                     r"([\d,]+[kK]?)\s+[Rr]eview",
@@ -460,6 +452,7 @@ def get_rating_and_reviews(soup, ft):
                     reviews = v
                     break
 
+    log.info(f"   rating={rating}  reviews={reviews}")
     return rating, reviews
 
 
@@ -467,64 +460,63 @@ def math_fallbacks(cur, orig, disc):
     if cur and disc and not orig:
         d = disc.replace("%","").strip()
         if d.isdigit() and cur.isdigit() and 1 <= int(d) <= 99:
-            orig = str(round(int(cur)/(1 - int(d)/100)))
+            orig = str(round(int(cur)/(1-int(d)/100)))
             log.info(f"   [MATH] orig={orig}")
     if orig and disc and not cur:
         d = disc.replace("%","").strip()
         if d.isdigit() and orig.isdigit() and 1 <= int(d) <= 99:
-            cur = str(round(int(orig)*(1 - int(d)/100)))
+            cur = str(round(int(orig)*(1-int(d)/100)))
             log.info(f"   [MATH] cur={cur}")
     if cur and orig and not disc:
         if cur.isdigit() and orig.isdigit() and int(orig) > int(cur):
             d = round((int(orig)-int(cur))/int(orig)*100)
             if 1 <= d <= 99:
-                disc = str(d) + "%"
+                disc = str(d)+"%"
                 log.info(f"   [MATH] disc={disc}")
     return cur, orig, disc
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BUILD DB PAYLOAD
+# BUILD PAYLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 def build_payload(cols, cur, orig, disc, rating, reviews):
-    payload = {}
-
+    p = {}
     if cur and "current_price" in cols:
-        payload[cols["current_price"]]  = fmt_price(cur)
+        p[cols["current_price"]]  = fmt_price(cur)
     if orig and "original_price" in cols:
-        payload[cols["original_price"]] = fmt_price(orig)
+        p[cols["original_price"]] = fmt_price(orig)
     if disc and "discount" in cols:
-        payload[cols["discount"]]       = fmt_disc(disc)
+        p[cols["discount"]]       = fmt_disc(disc)
+
     if "combined" in cols:
-        # "4.1 ★ | 239" format
         if rating and reviews:
-            payload[cols["combined"]] = f"{rating} ★ | {reviews}"
+            p[cols["combined"]] = f"{rating} ★ | {reviews}"
         elif rating:
-            payload[cols["combined"]] = rating
+            p[cols["combined"]] = rating
     else:
         if rating and "rating" in cols:
-            payload[cols["rating"]]   = rating
-        if reviews and "reviews" in cols:
-            payload[cols["reviews"]]  = reviews
-        if reviews and "reviews2" in cols:
-            payload[cols["reviews2"]] = reviews
-
-    return payload
+            p[cols["rating"]]   = rating
+        if reviews:
+            if "reviews" in cols:
+                p[cols["reviews"]] = reviews
+            if "reviews2" in cols:
+                p[cols["reviews2"]] = reviews
+    return p
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DB UPDATE WITH URL VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
-def update_db(client, table_name, link_col, url, payload):
+def update_db(client, table, link_col, url, payload):
     if not payload:
         log.warning("   Empty payload — skipping.")
         return False
     try:
-        # Verify URL exists
-        check = client.table(table_name).select(link_col).eq(link_col, url).execute()
+        # Verify URL exists first
+        check = client.table(table).select(link_col).eq(link_col, url).execute()
         if not check.data:
             clean = url.strip().rstrip("/")
-            check2 = client.table(table_name).select(link_col).eq(link_col, clean).execute()
+            check2 = client.table(table).select(link_col).eq(link_col, clean).execute()
             if check2.data:
                 url = clean
                 log.info("   [URL-FIX] Matched cleaned URL")
@@ -532,7 +524,7 @@ def update_db(client, table_name, link_col, url, payload):
                 log.error(f"   [URL-NOT-FOUND] {url[:70]}")
                 return False
 
-        result = client.table(table_name).update(payload).eq(link_col, url).execute()
+        client.table(table).update(payload).eq(link_col, url).execute()
         log.info(f"   [OK] {payload}")
         return True
     except Exception as exc:
@@ -549,8 +541,8 @@ def process_table(client, cfg):
     log.info(f"  TABLE: {name.upper()}")
     log.info(f"{'═'*70}")
 
-    rows = client.table(name).select("*").execute().data
-    rows = [r for r in rows if r.get(link_col,"").strip()]
+    rows = [r for r in client.table(name).select("*").execute().data
+            if r.get(link_col,"").strip()]
     log.info(f"  {len(rows)} products.")
 
     done = fail = 0
@@ -560,41 +552,39 @@ def process_table(client, cfg):
 
         cur = orig = disc = rating = reviews = ""
 
-        # PASS 1: CHEAP — all fields
+        # Pass 1: CHEAP
         soup1 = fetch(url, render=False)
         if soup1:
             ft1              = soup1.get_text(" ", strip=True)
             cur              = get_current_price(soup1, ft1)
             disc             = get_discount(soup1, ft1)
             orig             = get_original_price(soup1, ft1, cur, disc)
-            rating, reviews  = get_rating_and_reviews(soup1, ft1)
+            rating, reviews  = get_rating_reviews(soup1, ft1)
             log.info(f"   Pass1: cur={cur} disc={disc} orig={orig} rating={rating} reviews={reviews}")
 
         time.sleep(1)
 
-        # PASS 2: RENDER — only if reviews or rating missing
+        # Pass 2: RENDER — only if reviews or rating missing
         if not reviews or not rating:
-            log.info("   Pass2 (RENDER) — fetching for reviews/rating...")
+            log.info("   Pass2 (RENDER)...")
             soup2 = fetch(url, render=True)
             if soup2:
-                ft2             = soup2.get_text(" ", strip=True)
-                r2, rv2         = get_rating_and_reviews(soup2, ft2)
-                if not rating:   rating  = r2
-                if not reviews:  reviews = rv2
-                if not cur:      cur     = get_current_price(soup2, ft2)
-                if not disc:     disc    = get_discount(soup2, ft2)
-                if not orig:     orig    = get_original_price(soup2, ft2, cur, disc)
+                ft2            = soup2.get_text(" ", strip=True)
+                r2, rv2        = get_rating_reviews(soup2, ft2)
+                if not rating:  rating  = r2
+                if not reviews: reviews = rv2
+                if not cur:     cur     = get_current_price(soup2, ft2)
+                if not disc:    disc    = get_discount(soup2, ft2)
+                if not orig:    orig    = get_original_price(soup2, ft2, cur, disc)
                 log.info(f"   Pass2: rating={rating} reviews={reviews}")
         else:
-            log.info("   Pass2 skipped — data complete ✅")
+            log.info("   Pass2 skipped ✅ credits saved")
 
-        # Math fallbacks
         cur, orig, disc = math_fallbacks(cur, orig, disc)
 
-        # Sanity
         if cur and orig and cur.isdigit() and orig.isdigit():
             if int(cur) >= int(orig):
-                log.warning(f"   SANITY: cur({cur}) >= orig({orig}) — clearing orig")
+                log.warning(f"   SANITY: cur({cur})>=orig({orig}) — clearing orig")
                 orig = ""
 
         payload = build_payload(cols, cur, orig, disc, rating, reviews)
@@ -606,17 +596,16 @@ def process_table(client, cfg):
 
         time.sleep(DELAY)
 
-    log.info(f"\n  {name}: Updated={done}  Failed={fail}  Total={len(rows)}")
+    log.info(f"\n  {name}: Done={done}  Fail={fail}  Total={len(rows)}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    log.info("=" * 70)
-    log.info(f"  MASTER FLIPKART UPDATER — {len(TABLES)} tables")
-    log.info(f"  API Keys: {len(SCRAPERAPI_KEYS)}")
-    log.info("=" * 70)
+    log.info("="*70)
+    log.info(f"  MASTER UPDATER — {len(TABLES)} tables  |  Keys: {len(SCRAPERAPI_KEYS)}")
+    log.info("="*70)
 
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -624,11 +613,11 @@ def main():
         try:
             process_table(client, cfg)
         except Exception as exc:
-            log.error(f"  ERROR in table '{cfg['name']}': {exc}")
+            log.error(f"  ERROR in '{cfg['name']}': {exc}")
 
-    log.info("\n" + "=" * 70)
-    log.info("  ALL TABLES COMPLETE")
-    log.info("=" * 70)
+    log.info("\n" + "="*70)
+    log.info("  ALL DONE")
+    log.info("="*70)
 
 
 if __name__ == "__main__":
