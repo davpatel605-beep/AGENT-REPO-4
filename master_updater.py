@@ -236,21 +236,37 @@ def get_current_price(soup, ft):
 
 
 def get_discount(soup, ft):
-    m = re.search(r"[\u2193\u2198\u25bc\u2b07]\s*(\d{1,2})\s*%", ft)
+    """
+    STRICT: Only pick discount if DOWN ARROW (↓) is present on page.
+    iPhone 16 example: no ↓ = no discount. Bank offer % is NOT product discount.
+    """
+    # Method 1: Down arrow + number + % (exact Flipkart discount pattern)
+    m = re.search(r"[↓↘▼⬇]\s*(\d{1,2})\s*%", ft)
     if m and 1 <= int(m.group(1)) <= 99:
+        log.info(f"   [DISC] Found via arrow: {m.group(1)}%")
         return m.group(1) + "%"
+
+    # Method 2: CSS selector for discount tag (only near price, not bank offer)
     tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
     if tag:
         m = re.search(r"(\d{1,2})%", safe(tag))
         if m and 1 <= int(m.group(1)) <= 99:
+            log.info(f"   [DISC] Found via CSS: {m.group(1)}%")
             return m.group(1) + "%"
+
+    # Method 3: Only if short tag has EXACTLY "X% off" — not inside bank/offer text
     for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
-        if len(text) > 20:
+        # Must be short and standalone — not part of longer offer text
+        if len(text) > 15:
             continue
-        m = re.search(r"(\d{1,2})%\s*(off)?$", text, re.I)
+        # Must end with "% off" or just "%"
+        m = re.fullmatch(r"(\d{1,2})%\s*(off)?", text, re.I)
         if m and 1 <= int(m.group(1)) <= 99:
+            log.info(f"   [DISC] Found via tag: {m.group(1)}%")
             return m.group(1) + "%"
+
+    # No discount found on this page
     return ""
 
 
@@ -665,5 +681,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
