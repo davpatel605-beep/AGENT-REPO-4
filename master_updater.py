@@ -454,34 +454,25 @@ def get_rating_reviews(soup, ft):
     return rating, reviews
 
 
-def math_fallbacks(cur, orig, disc, product_has_discount):
-    """
-    Only calculate missing fields if product actually HAS a discount.
-    If no discount: current price is the only price, no orig/disc needed.
-    """
-    if not product_has_discount:
-        # No discount on this product — clear orig and disc
-        log.info("   [NO-DISCOUNT] Product has no discount — keeping only current price")
-        return cur, "", ""
-
+def math_fallbacks(cur, orig, disc):
+    """Fill missing field only when other two are real scraped values."""
     if cur and disc and not orig:
         d = disc.replace("%","").strip()
         if d.isdigit() and cur.isdigit() and 1 <= int(d) <= 99:
-            orig = str(round(int(cur)/(1-int(d)/100)))
+            orig = str(round(int(cur) / (1 - int(d)/100)))
             log.info(f"   [MATH] orig={orig}")
-    if orig and disc and not cur:
+    elif orig and disc and not cur:
         d = disc.replace("%","").strip()
         if d.isdigit() and orig.isdigit() and 1 <= int(d) <= 99:
-            cur = str(round(int(orig)*(1-int(d)/100)))
+            cur = str(round(int(orig) * (1 - int(d)/100)))
             log.info(f"   [MATH] cur={cur}")
-    if cur and orig and not disc:
+    elif cur and orig and not disc:
         if cur.isdigit() and orig.isdigit() and int(orig) > int(cur):
-            d = round((int(orig)-int(cur))/int(orig)*100)
+            d = round((int(orig) - int(cur)) / int(orig) * 100)
             if 1 <= d <= 99:
-                disc = str(d)+"%"
+                disc = str(d) + "%"
                 log.info(f"   [MATH] disc={disc}")
     return cur, orig, disc
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BUILD PAYLOAD
@@ -674,224 +665,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-def math_fallbacks(cur, orig, disc, product_has_discount):
-    """
-    Only calculate missing fields if product actually HAS a discount.
-    If no discount: current price is the only price, no orig/disc needed.
-    """
-    if not product_has_discount:
-        # No discount on this product — clear orig and disc
-        log.info("   [NO-DISCOUNT] Product has no discount — keeping only current price")
-        return cur, "", ""
 
-    if cur and disc and not orig:
-        d = disc.replace("%","").strip()
-        if d.isdigit() and cur.isdigit() and 1 <= int(d) <= 99:
-            orig = str(round(int(cur)/(1-int(d)/100)))
-            log.info(f"   [MATH] orig={orig}")
-    if orig and disc and not cur:
-        d = disc.replace("%","").strip()
-        if d.isdigit() and orig.isdigit() and 1 <= int(d) <= 99:
-            cur = str(round(int(orig)*(1-int(d)/100)))
-            log.info(f"   [MATH] cur={cur}")
-    if cur and orig and not disc:
-        if cur.isdigit() and orig.isdigit() and int(orig) > int(cur):
-            d = round((int(orig)-int(cur))/int(orig)*100)
-            if 1 <= d <= 99:
-                disc = str(d)+"%"
-                log.info(f"   [MATH] disc={disc}")
-    return cur, orig, disc
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BUILD PAYLOAD
-# ══════════════════════════════════════════════════════════════════════════════
-def build_payload(cols, cur, orig, disc, rating, reviews):
-    p = {}
-    if cur and "current_price" in cols:
-        p[cols["current_price"]]  = fmt_price(cur)
-    if orig and "original_price" in cols:
-        p[cols["original_price"]] = fmt_price(orig)
-    if disc and "discount" in cols:
-        p[cols["discount"]]       = fmt_disc(disc)
-
-    if "combined" in cols:
-        if rating and reviews:
-            p[cols["combined"]] = f"{rating} ★ | {reviews}"
-        elif rating:
-            p[cols["combined"]] = rating
-    else:
-        if rating and "rating" in cols:
-            p[cols["rating"]]   = rating
-        if reviews:
-            if "reviews" in cols:
-                p[cols["reviews"]] = reviews
-            if "reviews2" in cols:
-                p[cols["reviews2"]] = reviews
-    return p
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DB UPDATE WITH URL VERIFICATION
-# ══════════════════════════════════════════════════════════════════════════════
-class ColumnNotFoundError(Exception):
-    """Raised when a DB column does not exist — stops the workflow."""
-    pass
-
-
-def verify_columns(client, table, cols_dict):
-    """
-    Check that all columns in cols_dict exist in the table.
-    If any column is missing, raise ColumnNotFoundError to stop workflow.
-    """
-    try:
-        # Fetch one row to see actual column names
-        result = client.table(table).select("*").limit(1).execute()
-        if not result.data:
-            log.warning(f"   [COL-CHECK] Table '{table}' is empty — skipping column check.")
-            return
-        actual_cols = list(result.data[0].keys())
-        for key, col_name in cols_dict.items():
-            if col_name not in actual_cols:
-                msg = (
-                    f"\n{'!'*60}\n"
-                    f"  COLUMN NOT FOUND — WORKFLOW STOPPED\n"
-                    f"  Table  : {table}\n"
-                    f"  Column : '{col_name}'\n"
-                    f"  Actual columns: {actual_cols}\n"
-                    f"{'!'*60}"
-                )
-                log.error(msg)
-                raise ColumnNotFoundError(f"Column '{col_name}' not found in table '{table}'")
-        log.info(f"   [COL-CHECK] All columns verified OK for '{table}'")
-    except ColumnNotFoundError:
-        raise
-    except Exception as exc:
-        log.warning(f"   [COL-CHECK] Could not verify columns: {exc}")
-
-
-def update_db(client, table, link_col, url, payload):
-    if not payload:
-        log.warning("   Empty payload — skipping.")
-        return False
-    try:
-        # Verify URL exists first
-        check = client.table(table).select(link_col).eq(link_col, url).execute()
-        if not check.data:
-            clean = url.strip().rstrip("/")
-            check2 = client.table(table).select(link_col).eq(link_col, clean).execute()
-            if check2.data:
-                url = clean
-                log.info("   [URL-FIX] Matched cleaned URL")
-            else:
-                log.error(f"   [URL-NOT-FOUND] {url[:70]}")
-                return False
-
-        client.table(table).update(payload).eq(link_col, url).execute()
-        log.info(f"   [OK] {payload}")
-        return True
-    except Exception as exc:
-        log.error(f"   [DB] {exc}")
-        return False
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PROCESS ONE TABLE
-# ══════════════════════════════════════════════════════════════════════════════
-def process_table(client, cfg):
-    name, link_col, cols = cfg["name"], cfg["link"], cfg["cols"]
-    log.info(f"\n{'═'*70}")
-    log.info(f"  TABLE: {name.upper()}")
-    log.info(f"{'═'*70}")
-
-    rows = [r for r in client.table(name).select("*").execute().data
-            if r.get(link_col,"").strip()]
-    log.info(f"  {len(rows)} products.")
-
-    # Verify all columns exist before processing — stops workflow if missing
-    verify_columns(client, name, cols)
-
-    done = fail = 0
-    for idx, row in enumerate(rows, 1):
-        url = row[link_col].strip()
-        log.info(f"\n  [{idx}/{len(rows)}] {url[:80]}")
-
-        cur = orig = disc = rating = reviews = ""
-
-        # Pass 1: CHEAP
-        soup1 = fetch(url, render=False)
-        if soup1:
-            ft1              = soup1.get_text(" ", strip=True)
-            cur              = get_current_price(soup1, ft1)
-            disc             = get_discount(soup1, ft1)
-            orig             = get_original_price(soup1, ft1, cur, disc)
-            rating, reviews  = get_rating_reviews(soup1, ft1)
-            log.info(f"   Pass1: cur={cur} disc={disc} orig={orig} rating={rating} reviews={reviews}")
-
-        time.sleep(1)
-
-        # Pass 2: RENDER — only if reviews or rating missing
-        if not reviews or not rating:
-            log.info("   Pass2 (RENDER)...")
-            soup2 = fetch(url, render=True)
-            if soup2:
-                ft2            = soup2.get_text(" ", strip=True)
-                r2, rv2        = get_rating_reviews(soup2, ft2)
-                if not rating:  rating  = r2
-                if not reviews: reviews = rv2
-                if not cur:     cur     = get_current_price(soup2, ft2)
-                if not disc:    disc    = get_discount(soup2, ft2)
-                if not orig:    orig    = get_original_price(soup2, ft2, cur, disc)
-                log.info(f"   Pass2: rating={rating} reviews={reviews}")
-        else:
-            log.info("   Pass2 skipped ✅ credits saved")
-
-        cur, orig, disc = math_fallbacks(cur, orig, disc)
-
-        if cur and orig and cur.isdigit() and orig.isdigit():
-            if int(cur) >= int(orig):
-                log.warning(f"   SANITY: cur({cur})>=orig({orig}) — clearing orig")
-                orig = ""
-
-        payload = build_payload(cols, cur, orig, disc, rating, reviews)
-        log.info(f"   PAYLOAD: {payload}")
-
-        ok = update_db(client, name, link_col, url, payload)
-        if ok: done += 1
-        else:  fail += 1
-
-        time.sleep(DELAY)
-
-    log.info(f"\n  {name}: Done={done}  Fail={fail}  Total={len(rows)}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════════════════
-def main():
-    log.info("="*70)
-    log.info(f"  MASTER UPDATER — {len(TABLES)} tables  |  Keys: {len(SCRAPERAPI_KEYS)}")
-    log.info("="*70)
-
-    client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-    for cfg in TABLES:
-        try:
-            process_table(client, cfg)
-        except ColumnNotFoundError as exc:
-            log.error(f"\n{'='*70}")
-            log.error(f"  WORKFLOW STOPPED: {exc}")
-            log.error(f"  Fix the column name in TABLES config and re-run.")
-            log.error(f"{'='*70}")
-            raise SystemExit(1)   # Stop entire workflow immediately
-        except Exception as exc:
-            log.error(f"  ERROR in '{cfg['name']}': {exc}")
-
-    log.info("\n" + "="*70)
-    log.info("  ALL DONE")
-    log.info("="*70)
-
-
-if __name__ == "__main__":
-    main()
 
