@@ -56,7 +56,7 @@ TABLES = [
         "link": "Product Link",
         "cols": {
             "current_price":  "Price",
-            "original_price": "Discount Price",
+            "original_price": "Discounted Price",
             "discount":       "Discount percentage",
             "rating":         "Rating",
             "reviews":        "Number of Reviews",
@@ -332,54 +332,81 @@ def get_original_price(soup, ft, cur, disc):
 
 def get_rating_reviews(soup, ft):
     """
-    Extract rating and reviews.
     Pattern: "3.7 ★ | 239"
-    
-    Key insight: Rating tag (e.g. "3.7") and review count ("239")
-    are siblings inside the same parent container.
-    Find rating tag → scan siblings for a pure number → that is reviews.
+    Strategy:
+      1. Find exact rating tag e.g. "3.7"
+      2. In its DIRECT parent, find the | pipe text node
+      3. Number immediately after | = reviews
+      This avoids going too far up and picking up prices.
     """
-    rating  = ""
-    reviews = ""
-
-    # ── Rating ────────────────────────────────────────────────────────────────
+    rating     = ""
+    reviews    = ""
     rating_tag = None
+
+    # ── Step 1: Find rating tag (exact decimal) ───────────────────────────────
     for tag in soup.find_all(["div", "span"]):
         t = safe(tag).strip()
-        if re.fullmatch(r"[1-5]\.\d", t):
+        if re.fullmatch(r"[1-5]\.[0-9]", t):
             rating     = t
             rating_tag = tag
             break
 
     if not rating:
-        m = re.search(r"([1-5]\.\d)\s*[★✩⭐|]", ft)
-        if m: rating = m.group(1)
+        m = re.search(r"([1-5]\.[0-9])\s*[★✩⭐|]", ft)
+        if m:
+            rating = m.group(1)
 
-    # ── Reviews: scan rating tag siblings up to 3 parent levels ──────────────
+    # ── Step 2: Find | pipe → number after it (up to 3 parent levels) ─────────
     if rating_tag:
         node = rating_tag
-        for level in range(4):   # go up to 3 levels
+        for level in range(4):
             node = node.parent
-            if not node: break
+            if not node:
+                break
+            node_text = safe(node).strip()
 
-            # Collect all pure-digit text nodes in this container
-            pure_numbers = []
-            for child in node.descendants:
-                t = child.get_text(strip=True) if hasattr(child, "get_text") else str(child).strip()
-                # Must be ONLY digits (and optional commas) — no letters
-                clean = t.replace(",", "").replace(" ", "")
-                if clean.isdigit() and int(clean) >= 1 and clean != to_num(rating):
-                    pure_numbers.append(clean)
+            # This container must contain the rating AND | pipe
+            if rating not in node_text or "|" not in node_text:
+                continue
 
-            # Filter: reviews is NOT the current/original price (too large)
-            # Reviews is typically < 10,000,000 and >= 1
-            candidates = [n for n in pure_numbers if 1 <= int(n) <= 9999999]
-            if candidates:
-                reviews = candidates[0]
-                log.info(f"   [DOM-LVL{level}] reviews={reviews}")
+            # Find | pipe as text node inside this container
+            for pipe in node.find_all(string=re.compile(r"\|")):
+                # Get text node after pipe
+                # Look at next sibling elements
+                nxt = pipe.find_next(["span", "div", "a"])
+                if nxt:
+                    v = safe(nxt).strip().replace(",", "")
+                    if v.isdigit() and 1 <= int(v) <= 9999999:
+                        reviews = v
+                        log.info(f"   [PIPE-LVL{level}] reviews={v}")
+                        break
+
+                # Also try: split by | and get part after it
+                parts = node_text.split("|")
+                if len(parts) >= 2:
+                    after_pipe = parts[-1].strip().replace(",", "")
+                    # Must be pure number
+                    if after_pipe.isdigit() and 1 <= int(after_pipe) <= 9999999:
+                        reviews = after_pipe
+                        log.info(f"   [SPLIT-LVL{level}] reviews={after_pipe}")
+                        break
+
+            if reviews:
                 break
 
-    # ── Fallback: pipe | next sibling ────────────────────────────────────────
+    # ── Fallback A: inline tag with full pattern ──────────────────────────────
+    if not reviews:
+        for tag in soup.find_all(["div", "span"]):
+            t = safe(tag).strip()
+            m = re.search(r"[1-5]\.[0-9]\s*[★✩⭐]?\s*\|\s*([\d,]+)", t)
+            if m:
+                v = m.group(1).replace(",", "")
+                if v.isdigit() and int(v) >= 1:
+                    reviews = v
+                    log.info(f"   [INLINE] reviews={v}")
+                    break
+
+    # ── Fallback B: pipe text node → next sibling anywhere ───────────────────
     if not reviews:
         for pipe in soup.find_all(string=re.compile(r"^\s*\|\s*$")):
             nxt = pipe.find_next(["span", "div"])
@@ -387,49 +414,38 @@ def get_rating_reviews(soup, ft):
                 v = to_num(safe(nxt))
                 if v.isdigit() and int(v) >= 1:
                     reviews = v
-                    log.info(f"   [PIPE-NEXT] reviews={v}")
+                    log.info(f"   [PIPE-SIBLING] reviews={v}")
                     break
 
-    # ── Fallback: inline pattern ──────────────────────────────────────────────
-    if not reviews:
-        for tag in soup.find_all(["div", "span"]):
-            t = safe(tag).strip()
-            m = re.search(r"[1-5]\.\d\s*[★✩⭐]?\s*\|\s*([\d,]+)", t)
-            if m:
-                v = m.group(1).replace(",","")
-                if v.isdigit() and int(v) >= 1:
-                    reviews = v
-                    log.info(f"   [INLINE] reviews={v}")
-                    break
-
-    # ── Fallback: full text pattern ───────────────────────────────────────────
+    # ── Fallback C: full text pattern with rating ─────────────────────────────
     if not reviews and rating:
         for pat in [
             re.escape(rating) + r"\s*[★✩⭐]\s*\|\s*([\d,]+)",
             re.escape(rating) + r"\s*\|\s*([\d,]+)",
-            re.escape(rating) + r"[^\d]{1,8}([\d,]+)",
+            re.escape(rating) + r"[^\d]{1,6}([\d,]+)",
         ]:
             m = re.search(pat, ft)
             if m:
-                v = m.group(1).replace(",","")
+                v = m.group(1).replace(",", "")
                 if v.isdigit() and int(v) >= 1:
                     reviews = v
                     break
 
-    # ── Fallback: CSS selectors ───────────────────────────────────────────────
+    # ── Fallback D: CSS selectors ─────────────────────────────────────────────
     if not reviews:
         for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zegu",
-                    "span.Wphh3N","span._2_R_DZ","span._13vcmD"]:
+                    "span.Wphh3N", "span._2_R_DZ", "span._13vcmD"]:
             tag = soup.select_one(sel)
             if tag:
                 for n in re.findall(r"[\d,]+", safe(tag)):
-                    v = n.replace(",","")
+                    v = n.replace(",", "")
                     if v.isdigit() and int(v) >= 1:
                         reviews = v
                         break
-            if reviews: break
+            if reviews:
+                break
 
-    # ── Fallback: keyword patterns ────────────────────────────────────────────
+    # ── Fallback E: keyword scan ──────────────────────────────────────────────
     if not reviews:
         for pat in [r"([\d,]+[kK]?)\s+[Rr]ating",
                     r"([\d,]+[kK]?)\s+[Rr]eview",
@@ -611,3 +627,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
