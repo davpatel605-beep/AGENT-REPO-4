@@ -52,17 +52,6 @@ DELAY           = 1
 # ══════════════════════════════════════════════════════════════════════════════
 TABLES = [
     {
-        "name": "induction",
-        "link": "Product Link",
-        "cols": {
-            "current_price":  "Price",
-            "original_price": "Discounted Price",
-            "discount":       "Discount Percentage",
-            "rating":         "Rating",
-            "reviews":        "Number of Reviews",
-        },
-    },
-    {
         "name": "iphone",
         "link": "Product URL",
         "cols": {
@@ -71,7 +60,7 @@ TABLES = [
             "discount":       "Discount Percentage",
             "rating":         "Product Rating",
             "reviews":        "Number of Reviews",
-            "reviews2":       "Number of Rating",
+            "reviews2":       "Number of Ratings",
         },
     },
     {
@@ -92,7 +81,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating And Reviews",
+            "combined":       "Rating and Reviews",
         },
     },
     {
@@ -124,7 +113,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating And Reviews",
+            "combined":       "Ratings and Reviews",
         },
     },
     {
@@ -134,7 +123,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Ratings And Reviews",
+            "combined":       "Ratings and Reviews",
         },
     },
     {
@@ -512,6 +501,42 @@ def build_payload(cols, cur, orig, disc, rating, reviews):
 # ══════════════════════════════════════════════════════════════════════════════
 # DB UPDATE WITH URL VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
+class ColumnNotFoundError(Exception):
+    """Raised when a DB column does not exist — stops the workflow."""
+    pass
+
+
+def verify_columns(client, table, cols_dict):
+    """
+    Check that all columns in cols_dict exist in the table.
+    If any column is missing, raise ColumnNotFoundError to stop workflow.
+    """
+    try:
+        # Fetch one row to see actual column names
+        result = client.table(table).select("*").limit(1).execute()
+        if not result.data:
+            log.warning(f"   [COL-CHECK] Table '{table}' is empty — skipping column check.")
+            return
+        actual_cols = list(result.data[0].keys())
+        for key, col_name in cols_dict.items():
+            if col_name not in actual_cols:
+                msg = (
+                    f"\n{'!'*60}\n"
+                    f"  COLUMN NOT FOUND — WORKFLOW STOPPED\n"
+                    f"  Table  : {table}\n"
+                    f"  Column : '{col_name}'\n"
+                    f"  Actual columns: {actual_cols}\n"
+                    f"{'!'*60}"
+                )
+                log.error(msg)
+                raise ColumnNotFoundError(f"Column '{col_name}' not found in table '{table}'")
+        log.info(f"   [COL-CHECK] All columns verified OK for '{table}'")
+    except ColumnNotFoundError:
+        raise
+    except Exception as exc:
+        log.warning(f"   [COL-CHECK] Could not verify columns: {exc}")
+
+
 def update_db(client, table, link_col, url, payload):
     if not payload:
         log.warning("   Empty payload — skipping.")
@@ -549,6 +574,9 @@ def process_table(client, cfg):
     rows = [r for r in client.table(name).select("*").execute().data
             if r.get(link_col,"").strip()]
     log.info(f"  {len(rows)} products.")
+
+    # Verify all columns exist before processing — stops workflow if missing
+    verify_columns(client, name, cols)
 
     done = fail = 0
     for idx, row in enumerate(rows, 1):
@@ -617,6 +645,12 @@ def main():
     for cfg in TABLES:
         try:
             process_table(client, cfg)
+        except ColumnNotFoundError as exc:
+            log.error(f"\n{'='*70}")
+            log.error(f"  WORKFLOW STOPPED: {exc}")
+            log.error(f"  Fix the column name in TABLES config and re-run.")
+            log.error(f"{'='*70}")
+            raise SystemExit(1)   # Stop entire workflow immediately
         except Exception as exc:
             log.error(f"  ERROR in '{cfg['name']}': {exc}")
 
