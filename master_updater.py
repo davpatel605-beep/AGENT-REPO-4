@@ -59,7 +59,7 @@ TABLES = [
             "original_price": "Original Price-2",
             "discount":       "Discount-2",
             "rating":         "Product Rating",
-            "reviews":        "Product Review",
+            "reviews":        "product review",
         },
     },
     {
@@ -68,9 +68,9 @@ TABLES = [
         "cols": {
             "current_price":  "Price",
             "original_price": "Discount Price",
-            "discount":       "Discount Percentage",
+            "discount":       "Discount percentage",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of reviews",
         },
     },
     {
@@ -81,8 +81,8 @@ TABLES = [
             "original_price": "Discounted Price",
             "discount":       "Discount Percentage",
             "rating":         "Product Rating",
-            "reviews":        "Number Of Reviews",
-            "reviews2":       "Number Of Rating",
+            "reviews":        "Number of Reviews",
+            "reviews2":       "Number of Rating",
         },
     },
     {
@@ -93,7 +93,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -103,7 +103,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating And Reviews",
+            "combined":       "Rating and Reviews",
         },
     },
     {
@@ -114,7 +114,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -125,7 +125,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number Of Reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -135,7 +135,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating And Reviews",
+            "combined":       "Rating and Reviews",
         },
     },
     {
@@ -145,7 +145,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Ratings And Reviews",
+            "combined":       "Ratings and Reviews",
         },
     },
     {
@@ -622,3 +622,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
