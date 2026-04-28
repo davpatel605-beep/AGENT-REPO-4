@@ -70,7 +70,7 @@ TABLES = [
             "original_price": "Discount Price",
             "discount":       "Discount percentage",
             "rating":         "Rating",
-            "reviews":        "Number of reviews",
+            "reviews":        "Number of Reviews",
         },
     },
     {
@@ -622,4 +622,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
