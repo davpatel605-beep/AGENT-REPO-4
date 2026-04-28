@@ -57,9 +57,9 @@ TABLES = [
         "cols": {
             "current_price":  "Price",
             "original_price": "Discounted Price",
-            "discount":       "Discount percentage",
+            "discount":       "Discount Percentage",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -70,8 +70,8 @@ TABLES = [
             "original_price": "Discounted Price",
             "discount":       "Discount Percentage",
             "rating":         "Product Rating",
-            "reviews":        "Number of Reviews",
-            "reviews2":       "Number of Rating",
+            "reviews":        "Number Of Reviews",
+            "reviews2":       "Number Of Rating",
         },
     },
     {
@@ -82,7 +82,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -92,7 +92,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating and Reviews",
+            "combined":       "Rating And Reviews",
         },
     },
     {
@@ -103,7 +103,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -114,7 +114,7 @@ TABLES = [
             "original_price": "Original Price",
             "discount":       "Discount",
             "rating":         "Rating",
-            "reviews":        "Number of Reviews",
+            "reviews":        "Number Of Reviews",
         },
     },
     {
@@ -124,7 +124,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Rating and Reviews",
+            "combined":       "Rating And Reviews",
         },
     },
     {
@@ -134,7 +134,7 @@ TABLES = [
             "current_price":  "Price",
             "original_price": "Original Price",
             "discount":       "Discount",
-            "combined":       "Ratings and Reviews",
+            "combined":       "Ratings And Reviews",
         },
     },
     {
