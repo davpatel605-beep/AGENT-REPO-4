@@ -626,15 +626,12 @@ def process_table(client, cfg):
         else:
             log.info("   Pass2 skipped ✅ credits saved")
 
-        # Check if product actually has a discount
-        soup_check = soup2 if (not reviews or not rating) and "soup2" in dir() else soup1
-        ft_check   = soup_check.get_text(" ", strip=True) if soup_check else ""
-        product_has_discount = has_discount(soup_check, ft_check) if soup_check else bool(disc)
-
-        if not product_has_discount:
-            log.info("   [NO-DISCOUNT] No discount on this product")
-
-        cur, orig, disc = math_fallbacks(cur, orig, disc, product_has_discount)
+        # Check discount using soup1 (always available)
+        _ft1       = soup1.get_text(' ', strip=True) if soup1 else ''
+        _has_disc  = has_discount(soup1, _ft1) if soup1 else bool(disc)
+        if not _has_disc:
+            log.info('   [NO-DISCOUNT] No discount on page — orig/disc blank')
+        cur, orig, disc = math_fallbacks(cur, orig, disc, _has_disc)
 
         if cur and orig and cur.isdigit() and orig.isdigit():
             if int(cur) >= int(orig):
