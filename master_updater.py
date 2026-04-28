@@ -52,17 +52,6 @@ DELAY           = 1
 # ══════════════════════════════════════════════════════════════════════════════
 TABLES = [
     {
-        "name": "gaming pc",
-        "link": "Product Link",
-        "cols": {
-            "current_price":  "Price",
-            "original_price": "Original Price-2",
-            "discount":       "Discount-2",
-            "rating":         "Product Rating",
-            "reviews":        "product review",
-        },
-    },
-    {
         "name": "induction",
         "link": "Product Link",
         "cols": {
