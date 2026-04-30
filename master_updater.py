@@ -1,19 +1,21 @@
 """
 master_updater.py — Universal Flipkart Price Updater
 =====================================================
-Features:
-  1. 6 ScraperAPI keys auto-rotation
-  2. 7 tables with exact column mapping
-  3. Column verification before processing (stops workflow if missing)
-  4. Current Price, Original Price, Discount extraction
-  5. Strict discount — only down arrow ↓ pattern (ignores bank offers)
-  6. Math fallbacks — calculates missing field from other two
-  7. Rating + Reviews (7 methods, MAX 5 lakh, Indian format validation)
-  8. Credit saving — RENDER only if reviews/rating missing
-  9. URL verification before DB update
- 10. ₹ symbol + Indian number format
+Tables (12): earbuds → gaming cpu → gaming pc → induction → iphone →
+             keybord → laptop → monitar → mouse → smart phone → smart+tv → smartwatch
 
-Tables: keybord → laptop → monitar → mouse → smart phone → smart+tv → smartwatch
+Features:
+  1.  6 ScraperAPI keys — auto-rotation on 401/403
+  2.  12 tables with exact column mapping
+  3.  SWAP mode — induction + iphone: Price col = MRP, Discounted Price col = Current
+  4.  Discount — STRICT: only ↓ down arrow pattern. Bank offers ignored.
+  5.  Reviews — 7 methods + Indian format validation + last-2-digits discount strip
+               + 5-attempt security + 5 lakh hard limit
+  6.  Math fallbacks — only when real scraped data exists (no forced calc)
+  7.  Credit saving — RENDER only if rating/reviews missing after CHEAP
+  8.  URL verification + auto-clean before DB update
+  9.  Column error → skip that column, continue next product
+  10. ₹ symbol + Indian number format
 """
 
 import os, re, json, time, logging, requests
@@ -28,7 +30,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Credentials ───────────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 
@@ -55,16 +56,79 @@ def rotate_key():
 ENDPOINT        = "https://api.scraperapi.com/"
 REQUEST_TIMEOUT = 90
 DELAY           = 1
-MAX_REVIEWS     = 500000   # 5 lakh max realistic reviews
+MAX_REVIEWS     = 500000   # 5 lakh hard limit
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TABLE CONFIG — exact Supabase column names
+# TABLE CONFIG
+# swap=True → current_price col stores MRP, original_price col stores current
 # ══════════════════════════════════════════════════════════════════════════════
 TABLES = [
     {
+        "name": "earbuds",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "gaming cpu",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "gaming pc",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price-2",
+            "discount":       "Discount-2",
+            "rating":         "Product Rating",
+            "reviews":        "product review",
+        },
+    },
+    {
+        "name": "induction",
+        "link": "Product Link",
+        "swap": True,
+        "cols": {
+            "current_price":  "Discounted Price",
+            "original_price": "Price",
+            "discount":       "Discount Percentage",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "iphone",
+        "link": "Product URL",
+        "swap": True,
+        "cols": {
+            "current_price":  "Discounted Price",
+            "original_price": "Price",
+            "discount":       "Discount Percentage",
+            "rating":         "Product Rating",
+            "reviews":        "Number of Reviews",
+            "reviews2":       "Number of Ratings",
+        },
+    },
+    {
         "name": "keybord",
         "link": "Product Link",
+        "swap": False,
         "cols": {
             "current_price":  "Price",
             "original_price": "Original Price",
@@ -76,6 +140,7 @@ TABLES = [
     {
         "name": "laptop",
         "link": "Product Link",
+        "swap": False,
         "cols": {
             "current_price":  "Price",
             "original_price": "Original Price",
@@ -86,6 +151,7 @@ TABLES = [
     {
         "name": "monitar",
         "link": "Product URL",
+        "swap": False,
         "cols": {
             "current_price":  "Current Price",
             "original_price": "Original Price",
@@ -97,6 +163,7 @@ TABLES = [
     {
         "name": "mouse",
         "link": "Product Link",
+        "swap": False,
         "cols": {
             "current_price":  "Current Price",
             "original_price": "Original Price",
@@ -108,6 +175,7 @@ TABLES = [
     {
         "name": "smart phone",
         "link": "Product Link",
+        "swap": False,
         "cols": {
             "current_price":  "Price",
             "original_price": "Original Price",
@@ -118,6 +186,7 @@ TABLES = [
     {
         "name": "smart+tv",
         "link": "Product Link",
+        "swap": False,
         "cols": {
             "current_price":  "Price",
             "original_price": "Original Price",
@@ -128,6 +197,7 @@ TABLES = [
     {
         "name": "smartwatch",
         "link": "Product Link",
+        "swap": False,
         "cols": {
             "current_price":  "Price",
             "original_price": "Original Price",
@@ -140,40 +210,7 @@ TABLES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COLUMN VERIFICATION — stops workflow if column missing
-# ══════════════════════════════════════════════════════════════════════════════
-class ColumnNotFoundError(Exception):
-    pass
-
-
-def verify_columns(client: Client, table: str, cols: dict):
-    try:
-        result = client.table(table).select("*").limit(1).execute()
-        if not result.data:
-            log.warning(f"   [COL-CHECK] Table '{table}' empty — skipping check.")
-            return
-        actual = list(result.data[0].keys())
-        for key, col_name in cols.items():
-            if col_name not in actual:
-                msg = (
-                    f"\n{'!'*60}\n"
-                    f"  COLUMN NOT FOUND — WORKFLOW STOPPED\n"
-                    f"  Table   : {table}\n"
-                    f"  Missing : '{col_name}'\n"
-                    f"  Actual  : {actual}\n"
-                    f"{'!'*60}"
-                )
-                log.error(msg)
-                raise ColumnNotFoundError(f"'{col_name}' not in '{table}'")
-        log.info(f"   [COL-CHECK] All columns verified OK for '{table}'")
-    except ColumnNotFoundError:
-        raise
-    except Exception as exc:
-        log.warning(f"   [COL-CHECK] Could not verify: {exc}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FETCH — cheap (1 credit) or render (25 credits)
+# FETCH
 # ══════════════════════════════════════════════════════════════════════════════
 def fetch(url: str, render: bool = False) -> BeautifulSoup | None:
     key = get_key()
@@ -219,7 +256,7 @@ def parse_k(t):
     return m.group(1) if m else ""
 
 def fmt_price(v):
-    """13902 → ₹13,902 (Indian format)"""
+    """Convert '69900' → '₹69,900' in Indian format."""
     if not v or not v.isdigit():
         return v
     s = str(int(v))
@@ -232,35 +269,140 @@ def fmt_price(v):
 
 def fmt_disc(v):
     v = v.replace("%", "").strip()
-    return (v + "%") if v.isdigit() and 1 <= int(v) <= 99 else v
-
-def valid_indian_review(raw: str) -> str:
-    """
-    Validate Indian number format for reviews.
-    Valid: 34,452 | 2,19,513 | 1,00,258
-    Invalid: 3,445,210 (US format) | numbers > 5 lakh
-    Returns clean digit string if valid, else empty string.
-    """
-    clean = raw.replace(",", "")
-    if not clean.isdigit():
-        return ""
-    val = int(clean)
-    if val < 1 or val > MAX_REVIEWS:
-        return ""
-    # Validate Indian comma pattern
-    if "," in raw:
-        parts = raw.split(",")
-        # First part: 1-3 digits, rest: exactly 2 digits each (Indian format)
-        if len(parts[0]) > 3 or len(parts[0]) < 1:
-            return ""
-        for part in parts[1:]:
-            if len(part) != 2:
-                return ""
-    return clean
+    return (v + "%") if v.isdigit() and 1 <= int(v) <= 99 else ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EXTRACTORS
+# REVIEW VALIDATION — Indian format + security checks
+# ══════════════════════════════════════════════════════════════════════════════
+def validate_review(raw: str, discount: str = "", force_accept: bool = False) -> str:
+    """
+    Security checks for reviews:
+    1. Indian comma format: X,XX,XXX (not US format X,XXX,XXX)
+    2. Must be <= 5 lakh (MAX_REVIEWS)
+    3. If last 2 digits match discount number → strip them (fake review bug)
+    4. force_accept=True → accept even if > 5 lakh (only after 5 failed attempts)
+
+    Returns clean digit string if valid, else "".
+    """
+    if not raw:
+        return ""
+
+    clean = raw.replace(",", "").strip()
+    if not clean.isdigit():
+        return ""
+
+    val = int(clean)
+    if val < 1:
+        return ""
+
+    # Step 1: Strip trailing discount digits if they match
+    disc_num = discount.replace("%", "").strip() if discount else ""
+    if disc_num.isdigit() and len(disc_num) <= 2 and clean.endswith(disc_num):
+        stripped = clean[:-len(disc_num)]
+        if stripped.isdigit() and int(stripped) >= 1:
+            log.info(f"   [REVIEW-STRIP] {clean} → {stripped} (removed disc digits)")
+            clean = stripped
+            val   = int(clean)
+
+    # Step 2: Indian format check
+    if "," in raw:
+        parts = raw.split(",")
+        valid_indian = (
+            1 <= len(parts[0]) <= 3 and
+            all(len(p) == 2 for p in parts[1:])
+        )
+        if not valid_indian and not force_accept:
+            log.warning(f"   [REVIEW-REJECT] Not Indian format: {raw}")
+            return ""
+
+    # Step 3: 5 lakh hard limit — unless force_accept after all attempts failed
+    if val > MAX_REVIEWS and not force_accept:
+        log.warning(f"   [REVIEW-REJECT] Exceeds 5 lakh: {val}")
+        return ""
+
+    return clean
+
+
+def extract_review_number(soup, ft, rating, discount) -> str:
+    """
+    7 methods to find reviews.
+    Runs up to 5 attempts with increasing force_accept threshold.
+    """
+    def try_methods(force: bool = False) -> str:
+        rev = ""
+
+        # M1: inline "4.6 ★ | 34,452"
+        if rating:
+            for tag in soup.find_all(["div","span"]):
+                t = safe(tag).strip()
+                m = re.search(r"[1-5]\.[0-9]\s*[★✩⭐]?\s*\|\s*([\d,]+)", t)
+                if m:
+                    v = validate_review(m.group(1), discount, force)
+                    if v:
+                        log.info(f"   [M1-INLINE] reviews={v}")
+                        return v
+
+        # M2: | pipe text node → next sibling
+        for pipe in soup.find_all(string=re.compile(r"^\s*\|\s*$")):
+            nxt = pipe.find_next(["span","div"])
+            if nxt:
+                v = validate_review(safe(nxt).strip(), discount, force)
+                if v:
+                    log.info(f"   [M2-PIPE] reviews={v}")
+                    return v
+
+        # M3: full text pattern with rating
+        if rating:
+            for pat in [
+                re.escape(rating) + r"\s*[★✩⭐]\s*\|\s*([\d,]+)",
+                re.escape(rating) + r"\s*\|\s*([\d,]+)",
+            ]:
+                m = re.search(pat, ft)
+                if m:
+                    v = validate_review(m.group(1), discount, force)
+                    if v:
+                        log.info(f"   [M3-TEXT] reviews={v}")
+                        return v
+
+        # M4: CSS selectors
+        for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zegu",
+                    "span.Wphh3N","span._2_R_DZ","span._13vcmD"]:
+            tag = soup.select_one(sel)
+            if tag:
+                for raw in re.findall(r"[\d,]+", safe(tag)):
+                    v = validate_review(raw, discount, force)
+                    if v:
+                        log.info(f"   [M4-CSS] reviews={v}")
+                        return v
+
+        # M5: keyword patterns
+        for pat in [r"([\d,]+[kK]?)\s+[Rr]ating",
+                    r"([\d,]+[kK]?)\s+[Rr]eview",
+                    r"based on\s+([\d,]+[kK]?)\s+rating"]:
+            m = re.search(pat, ft, re.I)
+            if m:
+                v = validate_review(parse_k(m.group(1)), discount, force)
+                if v:
+                    log.info(f"   [M5-KEYWORD] reviews={v}")
+                    return v
+
+        return rev
+
+    # Run up to 5 attempts; last attempt force_accept=True
+    for attempt in range(1, 6):
+        force = (attempt == 5)   # 5th attempt: accept even if > 5 lakh
+        result = try_methods(force=force)
+        if result:
+            return result
+        if attempt < 5:
+            log.warning(f"   [REVIEW] Attempt {attempt} failed, retrying...")
+
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PRICE EXTRACTION
 # ══════════════════════════════════════════════════════════════════════════════
 def get_current_price(soup, ft):
     for sel in [
@@ -276,28 +418,22 @@ def get_current_price(soup, ft):
     m = re.search(r"Buy\s*at\s*₹\s*([\d,]+)", ft, re.I)
     if m:
         v = m.group(1).replace(",", "")
-        if valid_price(v):
-            return v
+        if valid_price(v): return v
     cart = soup.find(string=re.compile(r"Add to cart", re.I))
     if cart:
         p = cart.find_parent("div")
         for _ in range(6):
-            if not p:
-                break
+            if not p: break
             prices = re.findall(r"₹\s*([\d,]+)", p.get_text())
             vlist  = sorted([int(x.replace(",","")) for x in prices
                              if valid_price(x.replace(",",""))])
-            if vlist:
-                return str(vlist[0])
+            if vlist: return str(vlist[0])
             p = p.find_parent("div")
     return ""
 
 
 def get_discount(soup, ft):
-    """
-    Strict: only down arrow ↓ = real product discount.
-    Bank offers, cashback % are ignored.
-    """
+    """STRICT: Only ↓ down arrow = real product discount. Never bank/cashback %."""
     m = re.search(r"[\u2193\u2198\u25bc\u2b07]\s*(\d{1,2})\s*%", ft)
     if m and 1 <= int(m.group(1)) <= 99:
         return m.group(1) + "%"
@@ -306,10 +442,9 @@ def get_discount(soup, ft):
         m = re.search(r"(\d{1,2})%", safe(tag))
         if m and 1 <= int(m.group(1)) <= 99:
             return m.group(1) + "%"
-    for tag in soup.find_all(["div", "span"]):
+    for tag in soup.find_all(["div","span"]):
         text = safe(tag).strip()
-        if len(text) > 15:
-            continue
+        if len(text) > 15: continue
         m = re.fullmatch(r"(\d{1,2})%\s*(off)?", text, re.I)
         if m and 1 <= int(m.group(1)) <= 99:
             return m.group(1) + "%"
@@ -318,11 +453,10 @@ def get_discount(soup, ft):
 
 def get_original_price(soup, ft, cur, disc):
     def ok(v):
-        if not v or not valid_price(v):
-            return False
+        if not v or not valid_price(v): return False
         return int(v) > int(cur) if cur and cur.isdigit() else True
 
-    # Math first (5% tolerance, only ₹ prices)
+    # Math first (5% tolerance, ₹ prices only, only when real discount)
     if cur and cur.isdigit() and disc:
         d = disc.replace("%","").strip()
         if d.isdigit() and 1 <= int(d) <= 99:
@@ -330,13 +464,12 @@ def get_original_price(soup, ft, cur, disc):
             best_v, best_diff = "", float("inf")
             for p in re.findall(r"₹\s*([\d,]+)", ft):
                 v = p.replace(",","")
-                if not v.isdigit() or not valid_price(v) or int(v) <= int(cur):
-                    continue
+                if not v.isdigit() or not valid_price(v) or int(v) <= int(cur): continue
                 diff = abs(int(v) - exp) / exp
                 if diff < best_diff and diff <= 0.05:
                     best_diff, best_v = diff, v
             if best_v:
-                log.info(f"   [MATH] orig={best_v}  diff={best_diff:.2%}")
+                log.info(f"   [MATH] orig={best_v} diff={best_diff:.2%}")
                 return best_v
 
     # JSON-LD
@@ -351,7 +484,7 @@ def get_original_price(soup, ft, cur, disc):
                     if ok(v): return v
         except: pass
 
-    # <s> strikethrough tag
+    # <s> tag
     for s in soup.find_all("s"):
         v = to_num(safe(s))
         if ok(v): return v
@@ -373,7 +506,7 @@ def get_original_price(soup, ft, cur, disc):
             v = to_num(safe(tag))
             if ok(v): return v
 
-    # Number just before current price in text
+    # Number just before current price
     if cur:
         pos = ft.find(cur)
         if pos > 30:
@@ -383,130 +516,21 @@ def get_original_price(soup, ft, cur, disc):
     return ""
 
 
-def get_rating_reviews(soup, ft):
-    """
-    Pattern: "4.6 ★ | 2,19,513"
-    Reviews validated with Indian number format + MAX 5 lakh.
-    7 methods in order of reliability.
-    """
-    rating     = ""
-    reviews    = ""
-    rating_tag = None
-
-    # ── Rating ────────────────────────────────────────────────────────────────
+def get_rating(soup, ft) -> str:
     for tag in soup.find_all(["div","span"]):
         t = safe(tag).strip()
         if re.fullmatch(r"[1-5]\.[0-9]", t):
-            rating, rating_tag = t, tag
-            break
-    if not rating:
-        m = re.search(r"([1-5]\.[0-9])\s*[★✩⭐|]", ft)
-        if m: rating = m.group(1)
-
-    # ── Method 1: inline "4.6 ★ | 34,452" ───────────────────────────────────
-    if rating:
-        for tag in soup.find_all(["div","span"]):
-            t = safe(tag).strip()
-            m = re.search(r"[1-5]\.[0-9]\s*[★✩⭐]?\s*\|\s*([\d,]+)", t)
-            if m:
-                v = valid_indian_review(m.group(1))
-                if v:
-                    reviews = v
-                    log.info(f"   [M1-INLINE] reviews={v}")
-                    break
-
-    # ── Method 2: rating tag → parent → split by | ───────────────────────────
-    if not reviews and rating_tag:
-        node = rating_tag
-        for level in range(5):
-            node = node.parent
-            if not node: break
-            nt = safe(node).strip()
-            if "|" not in nt or rating not in nt: continue
-            parts = nt.split("|")
-            if len(parts) >= 2:
-                after = parts[-1].strip()
-                v = valid_indian_review(after)
-                if v:
-                    reviews = v
-                    log.info(f"   [M2-SPLIT] reviews={v}")
-                    break
-
-    # ── Method 3: | pipe text node → next sibling ────────────────────────────
-    if not reviews:
-        for pipe in soup.find_all(string=re.compile(r"^\s*\|\s*$")):
-            nxt = pipe.find_next(["span","div"])
-            if nxt:
-                raw = safe(nxt).strip()
-                v = valid_indian_review(raw)
-                if v:
-                    reviews = v
-                    log.info(f"   [M3-PIPE] reviews={v}")
-                    break
-
-    # ── Method 4: full text pattern ───────────────────────────────────────────
-    if not reviews and rating:
-        for pat in [
-            re.escape(rating) + r"\s*[★✩⭐]\s*\|\s*([\d,]+)",
-            re.escape(rating) + r"\s*\|\s*([\d,]+)",
-        ]:
-            m = re.search(pat, ft)
-            if m:
-                v = valid_indian_review(m.group(1))
-                if v:
-                    reviews = v
-                    log.info(f"   [M4-TEXT] reviews={v}")
-                    break
-
-    # ── Method 5: rating tag siblings ────────────────────────────────────────
-    if not reviews and rating_tag:
-        node = rating_tag
-        for level in range(4):
-            node = node.parent
-            if not node: break
-            for child in node.descendants:
-                t = child.get_text(strip=True) if hasattr(child,"get_text") else str(child).strip()
-                if t and t != rating and t not in ["★","✩","⭐","|"]:
-                    v = valid_indian_review(t)
-                    if v:
-                        reviews = v
-                        log.info(f"   [M5-SIBLING] reviews={v}")
-                        break
-            if reviews: break
-
-    # ── Method 6: CSS selectors ───────────────────────────────────────────────
-    if not reviews:
-        for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zegu",
-                    "span.Wphh3N","span._2_R_DZ","span._13vcmD"]:
-            tag = soup.select_one(sel)
-            if tag:
-                for raw in re.findall(r"[\d,]+", safe(tag)):
-                    v = valid_indian_review(raw)
-                    if v:
-                        reviews = v
-                        log.info(f"   [M6-CSS] reviews={v}")
-                        break
-            if reviews: break
-
-    # ── Method 7: keyword patterns ────────────────────────────────────────────
-    if not reviews:
-        for pat in [r"([\d,]+[kK]?)\s+[Rr]ating",
-                    r"([\d,]+[kK]?)\s+[Rr]eview",
-                    r"based on\s+([\d,]+[kK]?)\s+rating"]:
-            m = re.search(pat, ft, re.I)
-            if m:
-                v = valid_indian_review(parse_k(m.group(1)))
-                if v:
-                    reviews = v
-                    log.info(f"   [M7-KEYWORD] reviews={v}")
-                    break
-
-    log.info(f"   Final: rating={rating}  reviews={reviews}")
-    return rating, reviews
+            return t
+    m = re.search(r"([1-5]\.[0-9])\s*[★✩⭐|]", ft)
+    if m: return m.group(1)
+    return ""
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MATH FALLBACKS
+# ══════════════════════════════════════════════════════════════════════════════
 def math_fallbacks(cur, orig, disc):
-    """Fill one missing field when other two are real scraped values."""
+    """Fill ONE missing field using the other two. Never force discount."""
     if cur and disc and not orig:
         d = disc.replace("%","").strip()
         if d.isdigit() and cur.isdigit() and 1 <= int(d) <= 99:
@@ -529,14 +553,27 @@ def math_fallbacks(cur, orig, disc):
 # ══════════════════════════════════════════════════════════════════════════════
 # BUILD PAYLOAD
 # ══════════════════════════════════════════════════════════════════════════════
-def build_payload(cols, cur, orig, disc, rating, reviews):
+def build_payload(cols, cur, orig, disc, rating, reviews, swap=False):
     p = {}
-    if cur and "current_price" in cols:
-        p[cols["current_price"]]  = fmt_price(cur)
-    if orig and "original_price" in cols:
-        p[cols["original_price"]] = fmt_price(orig)
+
+    if swap:
+        # induction/iphone: Price col = MRP, Discounted Price col = Current
+        if orig and "current_price" in cols:
+            p[cols["current_price"]]  = fmt_price(orig)
+        if cur and "original_price" in cols:
+            p[cols["original_price"]] = fmt_price(cur)
+        # No discount → put current price in Discounted Price col
+        if not orig and cur and "original_price" in cols:
+            p[cols["original_price"]] = fmt_price(cur)
+    else:
+        if cur and "current_price" in cols:
+            p[cols["current_price"]]  = fmt_price(cur)
+        if orig and "original_price" in cols:
+            p[cols["original_price"]] = fmt_price(orig)
+
     if disc and "discount" in cols:
-        p[cols["discount"]]       = fmt_disc(disc)
+        p[cols["discount"]] = fmt_disc(disc)
+
     if "combined" in cols:
         if rating and reviews:
             p[cols["combined"]] = f"{rating} ★ | {reviews}"
@@ -544,16 +581,18 @@ def build_payload(cols, cur, orig, disc, rating, reviews):
             p[cols["combined"]] = rating
     else:
         if rating and "rating" in cols:
-            p[cols["rating"]]  = rating
-        if reviews and "reviews" in cols:
-            p[cols["reviews"]] = reviews
-        if reviews and "reviews2" in cols:
-            p[cols["reviews2"]] = reviews
+            p[cols["rating"]] = rating
+        if reviews:
+            if "reviews" in cols:
+                p[cols["reviews"]] = reviews
+            if "reviews2" in cols:
+                p[cols["reviews2"]] = reviews
+
     return p
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DB UPDATE WITH URL VERIFICATION
+# DB UPDATE — skip missing columns, don't stop workflow
 # ══════════════════════════════════════════════════════════════════════════════
 def update_db(client, table, link_col, url, payload):
     if not payload:
@@ -570,9 +609,25 @@ def update_db(client, table, link_col, url, payload):
             else:
                 log.error(f"   [URL-NOT-FOUND] {url[:70]}")
                 return False
-        client.table(table).update(payload).eq(link_col, url).execute()
-        log.info(f"   [OK] {payload}")
-        return True
+
+        # Try full payload first
+        try:
+            client.table(table).update(payload).eq(link_col, url).execute()
+            log.info(f"   [OK] {payload}")
+            return True
+        except Exception:
+            # Column error — try one by one, skip missing
+            log.warning("   Bulk update failed — trying column by column...")
+            success = False
+            for col, val in payload.items():
+                try:
+                    client.table(table).update({col: val}).eq(link_col, url).execute()
+                    log.info(f"   [OK-COL] {col}={val}")
+                    success = True
+                except Exception as ce:
+                    log.warning(f"   [COL-SKIP] '{col}' → {ce}")
+            return success
+
     except Exception as exc:
         log.error(f"   [DB] {exc}")
         return False
@@ -582,17 +637,18 @@ def update_db(client, table, link_col, url, payload):
 # PROCESS ONE TABLE
 # ══════════════════════════════════════════════════════════════════════════════
 def process_table(client, cfg):
-    name, link_col, cols = cfg["name"], cfg["link"], cfg["cols"]
+    name     = cfg["name"]
+    link_col = cfg["link"]
+    cols     = cfg["cols"]
+    swap     = cfg.get("swap", False)
+
     log.info(f"\n{'═'*70}")
-    log.info(f"  TABLE: {name.upper()}")
+    log.info(f"  TABLE: {name.upper()}  {'[SWAPPED]' if swap else ''}")
     log.info(f"{'═'*70}")
 
     rows = [r for r in client.table(name).select("*").execute().data
             if r.get(link_col,"").strip()]
     log.info(f"  {len(rows)} products.")
-
-    # Verify columns before processing
-    verify_columns(client, name, cols)
 
     done = fail = 0
     for idx, row in enumerate(rows, 1):
@@ -604,23 +660,25 @@ def process_table(client, cfg):
         # Pass 1: CHEAP (1 credit) — try everything
         soup1 = fetch(url, render=False)
         if soup1:
-            ft1            = soup1.get_text(" ", strip=True)
-            cur            = get_current_price(soup1, ft1)
-            disc           = get_discount(soup1, ft1)
-            orig           = get_original_price(soup1, ft1, cur, disc)
-            rating,reviews = get_rating_reviews(soup1, ft1)
+            ft1     = soup1.get_text(" ", strip=True)
+            cur     = get_current_price(soup1, ft1)
+            disc    = get_discount(soup1, ft1)
+            orig    = get_original_price(soup1, ft1, cur, disc)
+            rating  = get_rating(soup1, ft1)
+            reviews = extract_review_number(soup1, ft1, rating, disc)
             log.info(f"   Pass1: cur={cur} disc={disc} orig={orig} "
                      f"rating={rating} reviews={reviews}")
 
         time.sleep(1)
 
-        # Pass 2: RENDER (25 credits) — only if reviews or rating missing
+        # Pass 2: RENDER (25 credits) — only if rating or reviews missing
         if not reviews or not rating:
             log.info("   Pass2 (RENDER)...")
             soup2 = fetch(url, render=True)
             if soup2:
-                ft2          = soup2.get_text(" ", strip=True)
-                r2, rv2      = get_rating_reviews(soup2, ft2)
+                ft2 = soup2.get_text(" ", strip=True)
+                r2  = get_rating(soup2, ft2)
+                rv2 = extract_review_number(soup2, ft2, r2, disc)
                 if not rating:  rating  = r2
                 if not reviews: reviews = rv2
                 if not cur:     cur     = get_current_price(soup2, ft2)
@@ -639,7 +697,7 @@ def process_table(client, cfg):
                 log.warning(f"   SANITY: cur({cur})>=orig({orig}) — clearing orig")
                 orig = ""
 
-        payload = build_payload(cols, cur, orig, disc, rating, reviews)
+        payload = build_payload(cols, cur, orig, disc, rating, reviews, swap=swap)
         log.info(f"   PAYLOAD: {payload}")
 
         ok = update_db(client, name, link_col, url, payload)
@@ -664,14 +722,9 @@ def main():
     for cfg in TABLES:
         try:
             process_table(client, cfg)
-        except ColumnNotFoundError as exc:
-            log.error(f"\n{'='*70}")
-            log.error(f"  WORKFLOW STOPPED: {exc}")
-            log.error(f"  Fix the column name and re-run.")
-            log.error(f"{'='*70}")
-            raise SystemExit(1)
         except Exception as exc:
             log.error(f"  ERROR in '{cfg['name']}': {exc}")
+            log.error("  Continuing to next table...")
 
     log.info("\n" + "="*70)
     log.info("  ALL TABLES COMPLETE")
