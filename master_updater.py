@@ -521,14 +521,17 @@ def build_payload(cols, cur, orig, disc, rating, reviews, swap=False):
     p = {}
 
     if swap:
-        # induction/iphone: Price col = MRP, Discounted Price col = Current
-        if orig and "current_price" in cols:
-            p[cols["current_price"]]  = fmt_price(orig)
-        if cur and "original_price" in cols:
-            p[cols["original_price"]] = fmt_price(cur)
-        # No discount → put current price in Discounted Price col
-        if not orig and cur and "original_price" in cols:
-            p[cols["original_price"]] = fmt_price(cur)
+        # induction/iphone:
+        # cols["current_price"]  = "Discounted Price" → current price (after discount)
+        # cols["original_price"] = "Price"            → MRP (original price)
+        # Column names already define the swap — just put values in correctly:
+        if cur and "current_price" in cols:
+            p[cols["current_price"]]  = fmt_price(cur)   # current → Discounted Price col
+        if orig and "original_price" in cols:
+            p[cols["original_price"]] = fmt_price(orig)  # MRP → Price col
+        # No discount → current price goes directly to Discounted Price col
+        if not orig and cur and "current_price" in cols:
+            p[cols["current_price"]]  = fmt_price(cur)
     else:
         if cur and "current_price" in cols:
             p[cols["current_price"]]  = fmt_price(cur)
