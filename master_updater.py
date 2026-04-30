@@ -65,42 +65,6 @@ MAX_REVIEWS     = 500000   # 5 lakh hard limit
 # ══════════════════════════════════════════════════════════════════════════════
 TABLES = [
     {
-        "name": "earbuds",
-        "link": "Product Link",
-        "swap": False,
-        "cols": {
-            "current_price":  "Current Price",
-            "original_price": "Original Price",
-            "discount":       "Discount",
-            "rating":         "Rating",
-            "reviews":        "Number of Reviews",
-        },
-    },
-    {
-        "name": "gaming cpu",
-        "link": "Product Link",
-        "swap": False,
-        "cols": {
-            "current_price":  "Current Price",
-            "original_price": "Original Price",
-            "discount":       "Discount",
-            "rating":         "Rating",
-            "reviews":        "Number of Reviews",
-        },
-    },
-    {
-        "name": "gaming pc",
-        "link": "Product Link",
-        "swap": False,
-        "cols": {
-            "current_price":  "Price",
-            "original_price": "Original Price-2",
-            "discount":       "Discount-2",
-            "rating":         "Product Rating",
-            "reviews":        "product review",
-        },
-    },
-    {
         "name": "induction",
         "link": "Product Link",
         "swap": True,
@@ -715,16 +679,30 @@ def process_table(client, cfg):
 def main():
     log.info("=" * 70)
     log.info(f"  MASTER FLIPKART UPDATER — {len(TABLES)} tables | Keys: {len(SCRAPERAPI_KEYS)}")
+    log.info("  NON-CANCEL POLICY — runs until all tables complete")
     log.info("=" * 70)
 
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     for cfg in TABLES:
-        try:
-            process_table(client, cfg)
-        except Exception as exc:
-            log.error(f"  ERROR in '{cfg['name']}': {exc}")
-            log.error("  Continuing to next table...")
+        table_done = False
+        attempt    = 0
+        while not table_done:
+            attempt += 1
+            try:
+                process_table(client, cfg)
+                table_done = True
+            except KeyboardInterrupt:
+                log.warning("  KeyboardInterrupt ignored — NON-CANCEL policy active.")
+                table_done = True   # skip this table, go to next
+            except Exception as exc:
+                log.error(f"  ERROR in '{cfg['name']}' attempt {attempt}: {exc}")
+                if attempt >= 3:
+                    log.error(f"  Skipping '{cfg['name']}' after 3 attempts.")
+                    table_done = True
+                else:
+                    log.info(f"  Retrying '{cfg['name']}'...")
+                    time.sleep(5)
 
     log.info("\n" + "="*70)
     log.info("  ALL TABLES COMPLETE")
