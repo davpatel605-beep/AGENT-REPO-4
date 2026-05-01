@@ -34,7 +34,7 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 
 SCRAPERAPI_KEYS = []
-for _i in ["", "_2", "_3", "_4", "_5", "_6"]:
+for _i in ["", "_2", "_3", "_4", "_5", "_6", "_7", "_8"]:
     _k = os.environ.get(f"SCRAPERAPI_KEY{_i}", "").strip()
     if _k:
         SCRAPERAPI_KEYS.append(_k)
@@ -99,18 +99,6 @@ TABLES = [
             "rating":         "Product Rating",
             "reviews":        "Number of Reviews",
             "reviews2":       "Number of Ratings",
-        },
-    },
-    {
-        "name": "keybord",
-        "link": "Product Link",
-        "swap": False,
-        "cols": {
-            "current_price":  "Price",
-            "original_price": "Original Price",
-            "discount":       "Discount",
-            "rating":         "Rating",
-            "reviews":        "Number of Reviews",
         },
     },
     {
