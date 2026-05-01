@@ -423,21 +423,51 @@ def get_current_price(soup, ft):
 
 
 def get_discount(soup, ft):
-    """STRICT: Only ↓ down arrow = real product discount. Never bank/cashback %."""
+    """
+    Find discount percentage from page.
+    Priority:
+    1. Down arrow ↓ + number + % (most reliable)
+    2. Known Flipkart CSS class for discount tag
+    3. Short standalone tag with X% or X% off
+    4. Any tag near price area containing X% off pattern
+    """
+    # Method 1: Down arrow symbol + number + %
     m = re.search(r"[\u2193\u2198\u25bc\u2b07]\s*(\d{1,2})\s*%", ft)
     if m and 1 <= int(m.group(1)) <= 99:
         return m.group(1) + "%"
+
+    # Method 2: Flipkart discount CSS class
     tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
     if tag:
         m = re.search(r"(\d{1,2})%", safe(tag))
         if m and 1 <= int(m.group(1)) <= 99:
             return m.group(1) + "%"
-    for tag in soup.find_all(["div","span"]):
+
+    # Method 3: Short tag with standalone "X% off" or "X%"
+    for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
-        if len(text) > 15: continue
+        if len(text) > 15:
+            continue
         m = re.fullmatch(r"(\d{1,2})%\s*(off)?", text, re.I)
         if m and 1 <= int(m.group(1)) <= 99:
             return m.group(1) + "%"
+
+    # Method 4: Any tag containing "X% off" pattern (not bank offers)
+    for tag in soup.find_all(["div", "span"]):
+        text = safe(tag).strip()
+        if len(text) > 30:
+            continue
+        # Must contain "off" to be a discount, not a bank cashback
+        m = re.search(r"(\d{1,2})%\s+off", text, re.I)
+        if m and 1 <= int(m.group(1)) <= 99:
+            return m.group(1) + "%"
+
+    # Method 5: Scan full text for discount pattern near price context
+    for m in re.finditer(r"\b(\d{1,2})%\s+off\b", ft, re.I):
+        val = int(m.group(1))
+        if 1 <= val <= 99:
+            return str(val) + "%"
+
     return ""
 
 
