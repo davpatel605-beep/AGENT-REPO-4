@@ -102,6 +102,18 @@ TABLES = [
         },
     },
     {
+        "name": "keybord",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
         "name": "laptop",
         "link": "Product Link",
         "swap": False,
