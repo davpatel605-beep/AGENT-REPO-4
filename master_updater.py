@@ -65,6 +65,18 @@ MAX_REVIEWS     = 500000   # 5 lakh hard limit
 # ══════════════════════════════════════════════════════════════════════════════
 TABLES = [
     {
+        "name": "keybord",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
         "name": "induction",
         "link": "Product Link",
         "swap": True,
@@ -234,6 +246,20 @@ def fmt_price(v):
 def fmt_disc(v):
     v = v.replace("%", "").strip()
     return (v + "%") if v.isdigit() and 1 <= int(v) <= 99 else ""
+
+def fmt_reviews(v):
+    """Format reviews in Indian number format: 34452 → 34,452 | 219513 → 2,19,513"""
+    if not v or not v.isdigit():
+        return v
+    n = int(v)
+    if n < 1000:
+        return v
+    s = str(n)
+    # Indian format: last 3, then groups of 2
+    result, s = s[-3:], s[:-3]
+    while s:
+        result, s = s[-2:] + "," + result, s[:-2]
+    return result.lstrip(",")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -543,7 +569,7 @@ def build_payload(cols, cur, orig, disc, rating, reviews, swap=False):
 
     if "combined" in cols:
         if rating and reviews:
-            p[cols["combined"]] = f"{rating} ★ | {reviews}"
+            p[cols["combined"]] = f"{rating} ★ | {fmt_reviews(reviews)}"
         elif rating:
             p[cols["combined"]] = rating
     else:
@@ -551,9 +577,9 @@ def build_payload(cols, cur, orig, disc, rating, reviews, swap=False):
             p[cols["rating"]] = rating
         if reviews:
             if "reviews" in cols:
-                p[cols["reviews"]] = reviews
+                p[cols["reviews"]] = fmt_reviews(reviews)
             if "reviews2" in cols:
-                p[cols["reviews2"]] = reviews
+                p[cols["reviews2"]] = fmt_reviews(reviews)
 
     return p
 
