@@ -459,8 +459,25 @@ def get_discount(soup, ft):
 # ══════════════════════════════════════════════════════════════════════════════
 def get_original_price(soup, ft, cur, disc):
     """
-    Called ONLY when discount is found.
-    Uses calculation + strikethrough matching for maximum accuracy.
+    ORIGINAL PRICE EXTRACTION
+    ==========================
+    ONLY called after discount is confirmed on page.
+    Returns "" if disc is empty (no discount = no original price).
+
+    Step 1: Calculate exact MRP = current / (1 - disc/100)
+            e.g. cur=14899, disc=43% → MRP = 14899/0.57 = 26,138
+
+    Step 2: Find strikethrough numbers on page
+            Strikethrough in HTML = text with line through it:
+            <s>29,999</s>  or  style="text-decoration:line-through"
+            These digits look like: 0̶ 1̶ 2̶ 3̶ 4̶ 5̶ 6̶ 7̶ 8̶ 9̶
+
+    Step 3: Match page number to calculated MRP
+            - Within ₹15 → use page number
+            - Within 10% → use page number
+            - Otherwise → use exact calculation (reliable fallback)
+
+    Anti-bug: orig must be > cur AND > 500 (prevents ₹500 type errors)
     """
     if not cur or not cur.isdigit() or not disc:
         return ""
@@ -474,24 +491,26 @@ def get_original_price(soup, ft, cur, disc):
     log.info(f"   [MRP-CALC] cur={cur} disc={disc} → calc_mrp={calc_mrp}")
 
     # Step 2: Collect strikethrough numbers from all sources
+    # Anti-bug: orig must be > cur AND > 1000 (never ₹500 type errors)
+    min_orig = int(cur) + 1 if cur.isdigit() else 1
     strikethrough = []
 
     # A. <s> tag — HTML5 standard strikethrough (most common on Flipkart)
     for tag in soup.find_all("s"):
         v = to_num(safe(tag))
-        if v and valid_price(v) and int(v) > int(cur):
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
             strikethrough.append(int(v))
 
     # B. <del> tag — semantic deleted text
     for tag in soup.find_all("del"):
         v = to_num(safe(tag))
-        if v and valid_price(v) and int(v) > int(cur):
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
             strikethrough.append(int(v))
 
     # C. <strike> tag — deprecated but still used
     for tag in soup.find_all("strike"):
         v = to_num(safe(tag))
-        if v and valid_price(v) and int(v) > int(cur):
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
             strikethrough.append(int(v))
 
     # D. CSS line-through style attribute
