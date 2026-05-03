@@ -398,79 +398,131 @@ def get_current_price(soup, ft):
 # ══════════════════════════════════════════════════════════════════════════════
 def get_discount(soup, ft):
     """
-    DISCOUNT PATTERN (from image):
-      Line 1: 4.1 ★ | 1,01,973   ← rating + reviews
-      Line 2: ↓70%  2,999  ₹899  ← discount (GREEN, LARGE, just below rating)
+    RULE 1: Green ↓ arrow MUST exist on page — confirms discount is present.
+            No arrow = no discount = return ""
+    RULE 2: Find "X%" value near that arrow → that is discount %.
+    RULE 3: 4-source voting for the exact number.
 
-    Algorithm:
-      1. Find rating tag (e.g. "4.1")
-      2. Go to its parent container
-      3. In that container, find a SHORT tag (2-4 chars) with "X%" only
-         → That is the discount badge
-      4. Verify: the found number must NOT be part of reviews digits
-
-    This locks onto the exact visual position — not random page scanning.
+    Arrow is CSS/SVG — but Flipkart uses specific classes to render it.
+    Arrow classes confirmed from Flipkart HTML:
+      - div._1psv1zeb9 with SVG child
+      - class containing "UkUFwK"
+      - SVG path inside discount container
     """
+    from collections import Counter
 
-    def clean_disc(text):
-        """Extract 1-2 digit number before % from short text."""
-        text = text.strip()
-        if len(text) > 10:
-            return ""
-        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", text, re.I)
-        if m:
-            val = int(m.group(1))
-            if 1 <= val <= 99:
-                return str(val) + "%"
+    # ── STEP 1: Confirm ↓ arrow exists on page ────────────────────────────────
+    arrow_found = False
+
+    # Check 1: Unicode arrow in raw text (sometimes present)
+    if re.search(r"[↓↘▼⬇⇩]", ft):
+        arrow_found = True
+
+    # Check 2: Flipkart uses SVG arrow inside discount badge div
+    if not arrow_found:
+        for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zedr",
+                    "div.UkUFwK", "span.UkUFwK"]:
+            try:
+                tag = soup.select_one(sel)
+                if tag:
+                    arrow_found = True
+                    break
+            except: continue
+
+    # Check 3: SVG element anywhere near a "%" value
+    if not arrow_found:
+        for svg in soup.find_all("svg"):
+            parent = svg.parent
+            if parent:
+                parent_text = safe(parent)
+                if re.search(r"\d{1,2}\s*%", parent_text):
+                    arrow_found = True
+                    break
+
+    # Check 4: "% off" in text means arrow + discount exists
+    if not arrow_found:
+        bank_kw = ["bank","credit","debit","hdfc","sbi","axis","icici",
+                   "cashback","upi","emi","kotak","rbl","paytm","rupay"]
+        for m in re.finditer(r"\d{1,2}%\s+off", ft, re.I):
+            ctx = ft[max(0,m.start()-80):m.end()+40].lower()
+            if not any(kw in ctx for kw in bank_kw):
+                arrow_found = True
+                break
+
+    if not arrow_found:
+        log.info("   [DISC] No ↓ arrow found — no discount on page")
         return ""
 
-    def not_review_digit(disc_val, reviews_text):
-        """Ensure discount digits are NOT from reviews."""
-        if not reviews_text or not disc_val:
-            return True
-        disc_num = disc_val.replace("%","")
-        # Remove commas from reviews and check if disc_num appears as substring
-        rev_clean = reviews_text.replace(",","")
-        if disc_num in rev_clean:
-            return False  # suspicious overlap
-        return True
+    # ── STEP 2: Find the discount % value — 4 sources ────────────────────────
+    candidates = []
 
-    # ── Step 1: Find rating tag → look near it for discount ──────────────────
-    rating_tag = None
+    # S1: Tag near rating line (positional)
     for tag in soup.find_all(["div","span"]):
-        t = safe(tag).strip()
-        if re.fullmatch(r"[1-5]\.[0-9]", t):
-            rating_tag = tag
+        if re.fullmatch(r"[1-5]\.[0-9]", safe(tag).strip()):
+            node = tag.parent
+            for _ in range(6):
+                if not node: break
+                for child in node.find_all(["div","span"]):
+                    t = safe(child).strip()
+                    if 2 <= len(t) <= 6:
+                        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", t, re.I)
+                        if m:
+                            val = int(m.group(1))
+                            if 1 <= val <= 99:
+                                candidates.append(val)
+                                break
+                if candidates: break
+                node = node.parent
             break
 
-    if rating_tag:
-        # Go up to parent container and search siblings/children for short "X%" tag
-        parent = rating_tag.parent
-        for _ in range(4):  # up to 4 levels up
-            if not parent:
-                break
-            # Search all short tags in this container
-            for tag in parent.find_all(["div","span"]):
-                val = clean_disc(safe(tag))
-                if val:
-                    log.info(f"   [DISC-NEAR-RATING {val}]")
-                    return val
-            parent = parent.parent
+    # S2: Flipkart CSS discount badge
+    for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zedr",
+                "div.UkUFwK", "span.UkUFwK", "div._3Ay6Sb"]:
+        try:
+            tag = soup.select_one(sel)
+        except: continue
+        if tag:
+            m = re.search(r"(\d{1,2})\s*%", safe(tag).strip())
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    candidates.append(val)
+                    break
 
-    # ── Step 2: Fallback — find any short standalone "X%" tag ────────────────
-    # Must be ≤6 chars like "70%" or "70% off" to be a badge not a sentence
-    reviews_text = ""  # will collect reviews context for verification
+    # S3: Short standalone tag ≤6 chars
     for tag in soup.find_all(["div","span"]):
-        text = safe(tag).strip()
-        if not text or len(text) > 6:
-            continue
-        val = clean_disc(text)
-        if val:
-            log.info(f"   [DISC-STANDALONE {val}]")
-            return val
+        t = safe(tag).strip()
+        if 2 <= len(t) <= 6:
+            m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", t, re.I)
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    parent_t = safe(tag.parent).strip()[:60].lower() if tag.parent else ""
+                    if "rating" not in parent_t and "review" not in parent_t:
+                        candidates.append(val)
+                        break
 
-    log.info("   [DISC] Not found")
-    return ""
+    # S4: Full text "X% off" — bank filter
+    bank_kw = ["bank","credit","debit","hdfc","sbi","axis","icici",
+               "cashback","upi","emi","kotak","rbl","paytm","rupay"]
+    for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
+        val = int(m.group(1))
+        if not (1 <= val <= 99): continue
+        ctx = ft[max(0,m.start()-80):m.end()+40].lower()
+        if not any(kw in ctx for kw in bank_kw):
+            candidates.append(val)
+            break
+
+    if not candidates:
+        log.info("   [DISC] Arrow found but % value not extracted")
+        return ""
+
+    # ── STEP 3: Voting ────────────────────────────────────────────────────────
+    from collections import Counter
+    votes   = Counter(candidates)
+    best_val, best_count = votes.most_common(1)[0]
+    log.info(f"   [DISC-WINNER] {best_val}% (votes={candidates})")
+    return str(best_val) + "%"
 
 
 def get_original_price(soup, ft, cur, disc):
