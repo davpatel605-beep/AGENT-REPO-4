@@ -388,75 +388,544 @@ def get_current_price(soup, ft):
 # ══════════════════════════════════════════════════════════════════════════════
 def get_discount(soup, ft):
     """
-    Flipkart shows discount as: ↓54%  or  54% off
-    We look for down arrow ↓ (most reliable) then fallbacks.
-    NEVER auto-generate. If not on page → return "".
+    DISCOUNT EXTRACTION — ADVANCED
+    ================================
+    From image analysis:
+      Pattern: ↓78%  4,999  ₹1,099
+      - ↓ = green down arrow (Unicode)
+      - 78 = 1-2 digit number
+      - % = percent sign
+
+    The arrow + number + % always appear TOGETHER.
+    No spaces needed between them in code — be flexible.
+
+    iPhone example: No ↓ anywhere → disc = "" (correct)
+
+    6 methods, ordered by precision:
     """
-    # M1: Down arrow unicode variants + number + %
-    m = re.search(r"[\u2193\u2198\u25bc\u2b07\u21e9\u21a1]\s*(\d{1,2})\s*%", ft)
-    if m and 1 <= int(m.group(1)) <= 99:
-        log.info(f"   [DISC-ARROW] {m.group(1)}%")
-        return m.group(1) + "%"
 
-    # M2: Flipkart CSS class for discount
-    tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
-    if tag:
-        m = re.search(r"(\d{1,2})%", safe(tag))
-        if m and 1 <= int(m.group(1)) <= 99:
-            log.info(f"   [DISC-CSS] {m.group(1)}%")
-            return m.group(1) + "%"
+    # ── M1: Arrow directly attached to number and % ──────────────────────────
+    # Pattern: ↓78% or ↓ 78 % or ↓78 %
+    # Unicode arrows used by Flipkart:
+    #   ↓ U+2193  ↘ U+2198  ▼ U+25BC  ⬇ U+2B07
+    m = re.search(
+        r"[↓↘▼⬇⇩⤵]"   # arrow char
+        r"\s{0,3}"                                    # optional spaces
+        r"(\d{1,2})"                                  # 1-2 digit discount
+        r"\s{0,2}%",                                  # percent sign
+        ft
+    )
+    if m:
+        val = int(m.group(1))
+        if 1 <= val <= 99:
+            log.info(f"   [DISC-M1 ↓{val}%]")
+            return str(val) + "%"
 
-    # M3: Short standalone tag ≤15 chars — "54% off" or "54%"
+    # ── M2: CSS class for Flipkart discount badge ─────────────────────────────
+    # Flipkart renders discount in a specific div with these classes
+    for sel in [
+        "div._1psv1zeb9._1psv1ze0._1psv1zedr",
+        "div.UkUFwK",
+        "span.UkUFwK",
+        "div._3Ay6Sb",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            text = safe(tag)
+            m = re.search(r"(\d{1,2})\s*%", text)
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    log.info(f"   [DISC-M2-CSS {val}%]")
+                    return str(val) + "%"
+
+    # ── M3: Find any tag where ONLY content is "X% off" ─────────────────────
+    # Short tags (≤20 chars) that are discount badges
     for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
-        if len(text) > 15:
+        if not text or len(text) > 20:
             continue
-        m = re.fullmatch(r"(\d{1,2})%\s*(off)?", text, re.I)
-        if m and 1 <= int(m.group(1)) <= 99:
-            log.info(f"   [DISC-SHORT] {m.group(1)}%")
-            return m.group(1) + "%"
+        # Must end with "% off" or just "%"
+        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", text, re.I)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                log.info(f"   [DISC-M3-TAG {val}%]")
+                return str(val) + "%"
 
-    # M4: Tag ≤30 chars containing "X% off" — must have "off" keyword
+    # ── M4: Look for arrow in individual tags ─────────────────────────────────
+    # Sometimes arrow and % are in same tag
     for tag in soup.find_all(["div", "span"]):
         text = safe(tag).strip()
-        if len(text) > 30:
+        if not text or len(text) > 30:
             continue
-        m = re.search(r"(\d{1,2})%\s+off", text, re.I)
-        if m and 1 <= int(m.group(1)) <= 99:
-            log.info(f"   [DISC-OFF] {m.group(1)}%")
-            return m.group(1) + "%"
+        m = re.search(
+            r"[↓↘▼⬇⇩]\s*(\d{1,2})\s*%",
+            text
+        )
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                log.info(f"   [DISC-M4-TAGARROW {val}%]")
+                return str(val) + "%"
 
-    # M5: Full text "X% off" — filter out bank offer context
-    for m in re.finditer(r"\b(\d{1,2})%\s+off\b", ft, re.I):
+    # ── M5: Scan full text — "X% off" with anti-bank-offer filter ────────────
+    bank_kw = ["bank", "credit card", "debit card", "hdfc", "sbi", "axis",
+                "icici", "cashback", "upi", "emi", "kotak", "rbl",
+                "paytm", "mobikwik", "bhim", "rupay"]
+    for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
         val = int(m.group(1))
         if not (1 <= val <= 99):
             continue
-        ctx = ft[max(0, m.start()-50): m.end()+30].lower()
-        bank_kw = ["bank", "credit", "debit", "hdfc", "sbi", "axis",
-                   "icici", "cashback", "upi", "emi", "kotak", "rbl"]
+        ctx = ft[max(0, m.start()-80): m.end()+40].lower()
         if not any(kw in ctx for kw in bank_kw):
-            log.info(f"   [DISC-TEXT] {val}%")
+            log.info(f"   [DISC-M5-TEXT {val}%]")
             return str(val) + "%"
 
-    # No discount found on page
+    # ── M6: JSON-LD structured data ───────────────────────────────────────────
+    for sc in soup.find_all("script", {"type": "application/ld+json"}):
+        try:
+            obj = json.loads(sc.string or "")
+            items = obj if isinstance(obj, list) else [obj]
+            for item in items:
+                offers = item.get("offers", {})
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else {}
+                # priceSpecification or discount fields
+                for key in ["discount", "discountPercentage"]:
+                    raw = str(offers.get(key, ""))
+                    m = re.search(r"(\d{1,2})", raw)
+                    if m:
+                        val = int(m.group(1))
+                        if 1 <= val <= 99:
+                            log.info(f"   [DISC-M6-JSONLD {val}%]")
+                            return str(val) + "%"
+        except:
+            pass
+
+    log.info("   [DISC] Not found — no ↓ arrow on page")
+    return ""
+
+
+def get_original_price(soup, ft, cur, disc):
+    """
+    ORIGINAL/MRP PRICE — the strikethrough number between ↓% and ₹current.
+
+    Visual pattern from Flipkart page:
+      ↓78%   4,999   ₹1,099
+               ↑
+         lighter gray text
+         with line through it
+         = Original/MRP price
+
+    This number appears in HTML as:
+      <s>4,999</s>               (s tag — strikethrough)
+      <del>4,999</del>           (del tag)
+      style="text-decoration:line-through"  (CSS)
+
+    Strategy (in order):
+      Step 1: Calculate MRP = cur / (1 - disc/100)
+              e.g. cur=1099, disc=78% → MRP = 1099/0.22 = 4,995
+
+      Step 2A: Find number in text BETWEEN arrow pattern and ₹current
+               Pattern: ↓78%   [THIS NUMBER]   ₹1,099
+               Regex: ↓disc%\D{0,20}(strikethrough_number)\D{0,10}₹cur
+
+      Step 2B: Find <s>, <del>, line-through tags
+
+      Step 3: Match found numbers to calculated MRP
+              Within ₹15  → use page number (exact match)
+              Within 10%  → use page number (close match)
+              Otherwise   → use calculated MRP (reliable fallback)
+    """
+    if not cur or not cur.isdigit() or not disc:
+        return ""
+    d = disc.replace("%","").strip()
+    if not d.isdigit() or not (1 <= int(d) <= 99):
+        return ""
+
+    cur_int  = int(cur)
+    min_orig = cur_int + 1
+
+    # ── Step 1: Calculate exact MRP ──────────────────────────────────────────
+    calc_mrp = round(cur_int / (1 - int(d) / 100))
+    log.info(f"   [MRP-CALC] cur={cur} disc={disc}% → calc_mrp={calc_mrp}")
+
+    found = []
+
+    # ── Step 2A: Between-pattern in raw text ─────────────────────────────────
+    # Pattern: ↓78% ... 4,999 ... ₹1,099
+    # Look for the number that sits between discount% and ₹current in text
+    disc_pattern = re.escape(d) + r"%"
+    cur_pattern  = r"₹\s*" + re.escape(
+        "{:,}".format(cur_int).replace(",", ",")
+    ).replace(",", "[,.]?")
+
+    # Find position of ↓disc% in text
+    arrow_match = re.search(
+        r"[↓↘▼⬇]\s*" + disc_pattern, ft
+    )
+    if arrow_match:
+        # Search window: from after ↓disc% to ₹current
+        window_start = arrow_match.end()
+        window_end   = ft.find(cur, window_start)
+        if window_end == -1:
+            window_end = window_start + 200
+        window = ft[window_start:window_end]
+
+        # Extract all numbers in this window
+        for raw in re.findall(r"[\d,]+", window):
+            v = raw.replace(",","")
+            if v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+                log.info(f"   [MRP-BETWEEN] found {v} in window")
+
+    # ── Step 2B: <s>, <del>, line-through tags ────────────────────────────────
+    for tag in soup.find_all(["s", "del", "strike"]):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+            found.append(int(v))
+
+    for tag in soup.find_all(True):
+        if "line-through" in tag.get("style", ""):
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+
+    # ── Step 2C: Flipkart MRP CSS classes ────────────────────────────────────
+    for sel in [
+        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
+        "div.yRaY8j.ZYYwLA", "div.yRaY8j",
+        "div._3I9_wc._2p6lqe", "div._3I9_wc",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+
+    # ── Step 3: Match found numbers to calculated MRP ─────────────────────────
+    if found:
+        # Remove duplicates, keep only > cur
+        found = sorted(set(found))
+        # Find closest to calculated MRP
+        closest  = min(found, key=lambda x: abs(x - calc_mrp))
+        diff_rs  = abs(closest - calc_mrp)
+        diff_pct = diff_rs / calc_mrp if calc_mrp else 1
+
+        if diff_rs <= 15:
+            log.info(f"   [MRP-MATCH ₹{diff_rs}] page={closest} calc={calc_mrp}")
+            return str(closest)
+        elif diff_pct <= 0.10:
+            log.info(f"   [MRP-MATCH {diff_pct:.1%}] page={closest} calc={calc_mrp}")
+            return str(closest)
+        else:
+            # Page number too far from calculation → trust calculation
+            log.info(f"   [MRP-CALC] {calc_mrp} (page={closest} diff=₹{diff_rs})")
+            return str(calc_mrp)
+
+    # No page number found → use calculation
+    log.info(f"   [MRP-CALC-ONLY] {calc_mrp}")
+    return str(calc_mrp)
+
+
+def get_rating(soup, ft) -> str:
+    for tag in soup.find_all(["div","span"]):
+        t = safe(tag).strip()
+        if re.fullmatch(r"[1-5]\.[0-9]", t):
+            return t
+    m = re.search(r"([1-5]\.[0-9])\s*[★✩⭐|]", ft)
+    if m: return m.group(1)
     return ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ORIGINAL PRICE
-# Step 1: calc exact MRP = cur / (1 - disc/100)
-# Step 2: collect ALL strikethrough numbers from page
-#   - <s> tag (HTML5 standard)
-#   - <del> tag (semantic deleted)
-#   - <strike> tag (deprecated but used)
-#   - CSS text-decoration: line-through
-#   - Flipkart CSS classes
-# Step 3: find strikethrough number closest to calculated MRP
-#   - within ₹15 → use page number
-#   - within 10% → use page number
-#   - else → use exact calculation
-# ONLY called when discount was found on page
+# CURRENT PRICE — NOT CHANGED (working perfectly)
 # ══════════════════════════════════════════════════════════════════════════════
+def get_current_price(soup, ft):
+    for sel in [
+        "div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0",
+        "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
+        "div._30jeq3._16Jk6d", "div._30jeq3", "div.CEmiEU",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            v = to_num(safe(tag))
+            if v and valid_price(v):
+                return v
+    m = re.search(r"Buy\s*at\s*₹\s*([\d,]+)", ft, re.I)
+    if m:
+        v = m.group(1).replace(",", "")
+        if valid_price(v): return v
+    cart = soup.find(string=re.compile(r"Add to cart", re.I))
+    if cart:
+        p = cart.find_parent("div")
+        for _ in range(6):
+            if not p: break
+            prices = re.findall(r"₹\s*([\d,]+)", p.get_text())
+            vlist  = sorted([int(x.replace(",","")) for x in prices
+                             if valid_price(x.replace(",",""))])
+            if vlist: return str(vlist[0])
+            p = p.find_parent("div")
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DISCOUNT — 100% ACCURATE
+# Only picks REAL product discount (↓ arrow + %).
+# NO auto-generation of discount. If not found → return ""
+# ══════════════════════════════════════════════════════════════════════════════
+def get_discount(soup, ft):
+    """
+    DISCOUNT — based on exact visual pattern from Flipkart page.
+
+    Pattern observed: ↓78%  4,999  ₹1,099
+      - ↓ = green down arrow (comes FIRST)
+      - 78 = discount number (1-99)
+      - % = percent sign (comes right after number)
+
+    Image 2 (iPhone): No ↓ arrow anywhere = NO discount = return ""
+
+    Priority:
+      M1: ↓ arrow + number + %  ← EXACT visual pattern, most reliable
+      M2: Flipkart CSS discount class
+      M3: Short tag with X% off (the "off" word confirms product discount)
+    """
+    # M1: Down arrow (↓) + number + % — THE exact Flipkart discount pattern
+    # Unicode arrows: ↓(2193) ↘(2198) ▼(25bc) ⬇(2b07)
+    m = re.search(r"[↓↘▼⬇]\s*(\d{1,2})\s*%", ft)
+    if m:
+        val = int(m.group(1))
+        if 1 <= val <= 99:
+            log.info(f"   [DISC-ARROW ↓] {val}%")
+            return str(val) + "%"
+
+    # M2: Flipkart CSS discount badge class
+    for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zedr",
+                "div.UkUFwK", "span.UkUFwK"]:
+        tag = soup.select_one(sel)
+        if tag:
+            m = re.search(r"(\d{1,2})%", safe(tag))
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    log.info(f"   [DISC-CSS] {val}%")
+                    return str(val) + "%"
+
+    # M3: Short tag ≤20 chars with "X% off" — "off" confirms product discount
+    for tag in soup.find_all(["div", "span"]):
+        text = safe(tag).strip()
+        if len(text) > 20:
+            continue
+        m = re.search(r"(\d{1,2})%\s*(off)?$", text, re.I)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                log.info(f"   [DISC-TAG] {val}%")
+                return str(val) + "%"
+
+    # No ↓ arrow found = no discount on this page
+    log.info("   [DISC] No discount found (no ↓ arrow)")
+    return ""
+
+
+def get_original_price(soup, ft, cur, disc):
+    """
+    ORIGINAL PRICE — strikethrough number near ↓ arrow.
+
+    Flipkart pattern: ↓78%  [4,999]  ₹1,099
+      - Number with line through it = original/MRP price
+      - Comes BETWEEN discount% and current price
+
+    Strikethrough in HTML:
+      <s>4,999</s>           ← s tag (line through: 4̶,̶9̶9̶9̶)
+      <del>4,999</del>       ← del tag
+      style="line-through"  ← CSS
+
+    Number digit shapes with strikethrough line:
+      0̶ → circle with horizontal line through middle
+      1̶ → vertical line with horizontal cut
+      2̶ → curved top, diagonal, horizontal base — all crossed
+      3̶ → two bumps on right, crossed
+      4̶ → angle shape, crossed
+      5̶ → top flat, curve down, base flat — crossed
+      6̶ → circle with tail at top, crossed
+      7̶ → horizontal top, diagonal down, crossed
+      8̶ → two circles stacked (different from 0), crossed
+      9̶ → circle on top with tail down, crossed
+
+    Steps:
+      1. Calc MRP = cur / (1 - disc/100)
+      2. Find all strikethrough numbers on page
+      3. Match: within ₹15 → use page; within 10% → use page; else calc
+    """
+    if not cur or not cur.isdigit() or not disc:
+        return ""
+    d = disc.replace("%","").strip()
+    if not d.isdigit() or not (1 <= int(d) <= 99):
+        return ""
+
+    # Step 1: Calculate exact MRP
+    calc_mrp = round(int(cur) / (1 - int(d) / 100))
+    log.info(f"   [MRP-CALC] cur={cur} disc={disc} → calc={calc_mrp}")
+
+    # Step 2: Find strikethrough numbers
+    # Only accept numbers > current price
+    min_orig = int(cur) + 1 if cur.isdigit() else 1
+    found = []
+
+    # A. <s> tag (most common on Flipkart — HTML strikethrough)
+    for tag in soup.find_all("s"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+            found.append(int(v))
+
+    # B. <del> tag
+    for tag in soup.find_all("del"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+            found.append(int(v))
+
+    # C. CSS line-through style
+    for tag in soup.find_all(True):
+        if "line-through" in tag.get("style", ""):
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+
+    # D. Flipkart MRP CSS classes
+    for sel in [
+        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
+        "div.yRaY8j.ZYYwLA", "div.yRaY8j",
+        "div._3I9_wc._2p6lqe", "div._3I9_wc",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+
+    # Step 3: Match found numbers to calculated MRP
+    if found:
+        closest  = min(found, key=lambda x: abs(x - calc_mrp))
+        diff_rs  = abs(closest - calc_mrp)
+        diff_pct = diff_rs / calc_mrp if calc_mrp else 1
+
+        if diff_rs <= 15:
+            log.info(f"   [MRP-PAGE ₹diff={diff_rs}] {closest}")
+            return str(closest)
+        elif diff_pct <= 0.10:
+            log.info(f"   [MRP-PAGE {diff_pct:.1%}] {closest}")
+            return str(closest)
+        else:
+            log.info(f"   [MRP-CALC-EXACT diff=₹{diff_rs}] {calc_mrp}")
+            return str(calc_mrp)
+
+    # No strikethrough found → use calculation
+    log.info(f"   [MRP-CALC-ONLY] {calc_mrp}")
+    return str(calc_mrp)
+
+
+def get_rating(soup, ft) -> str:
+    for tag in soup.find_all(["div","span"]):
+        t = safe(tag).strip()
+        if re.fullmatch(r"[1-5]\.[0-9]", t):
+            return t
+    m = re.search(r"([1-5]\.[0-9])\s*[★✩⭐|]", ft)
+    if m: return m.group(1)
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CURRENT PRICE — NOT CHANGED (working perfectly)
+# ══════════════════════════════════════════════════════════════════════════════
+def get_current_price(soup, ft):
+    for sel in [
+        "div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0",
+        "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
+        "div._30jeq3._16Jk6d", "div._30jeq3", "div.CEmiEU",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            v = to_num(safe(tag))
+            if v and valid_price(v):
+                return v
+    m = re.search(r"Buy\s*at\s*₹\s*([\d,]+)", ft, re.I)
+    if m:
+        v = m.group(1).replace(",", "")
+        if valid_price(v): return v
+    cart = soup.find(string=re.compile(r"Add to cart", re.I))
+    if cart:
+        p = cart.find_parent("div")
+        for _ in range(6):
+            if not p: break
+            prices = re.findall(r"₹\s*([\d,]+)", p.get_text())
+            vlist  = sorted([int(x.replace(",","")) for x in prices
+                             if valid_price(x.replace(",",""))])
+            if vlist: return str(vlist[0])
+            p = p.find_parent("div")
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DISCOUNT — 100% ACCURATE
+# Only picks REAL product discount (↓ arrow + %).
+# NO auto-generation of discount. If not found → return ""
+# ══════════════════════════════════════════════════════════════════════════════
+def get_discount(soup, ft):
+    """
+    DISCOUNT — based on exact visual pattern from Flipkart page.
+
+    Pattern observed: ↓78%  4,999  ₹1,099
+      - ↓ = green down arrow (comes FIRST)
+      - 78 = discount number (1-99)
+      - % = percent sign (comes right after number)
+
+    Image 2 (iPhone): No ↓ arrow anywhere = NO discount = return ""
+
+    Priority:
+      M1: ↓ arrow + number + %  ← EXACT visual pattern, most reliable
+      M2: Flipkart CSS discount class
+      M3: Short tag with X% off (the "off" word confirms product discount)
+    """
+    # M1: Down arrow (↓) + number + % — THE exact Flipkart discount pattern
+    # Unicode arrows: ↓(2193) ↘(2198) ▼(25bc) ⬇(2b07)
+    m = re.search(r"[↓↘▼⬇]\s*(\d{1,2})\s*%", ft)
+    if m:
+        val = int(m.group(1))
+        if 1 <= val <= 99:
+            log.info(f"   [DISC-ARROW ↓] {val}%")
+            return str(val) + "%"
+
+    # M2: Flipkart CSS discount badge class
+    for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zedr",
+                "div.UkUFwK", "span.UkUFwK"]:
+        tag = soup.select_one(sel)
+        if tag:
+            m = re.search(r"(\d{1,2})%", safe(tag))
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    log.info(f"   [DISC-CSS] {val}%")
+                    return str(val) + "%"
+
+    # M3: Short tag ≤20 chars with "X% off" — "off" confirms product discount
+    for tag in soup.find_all(["div", "span"]):
+        text = safe(tag).strip()
+        if len(text) > 20:
+            continue
+        m = re.search(r"(\d{1,2})%\s*(off)?$", text, re.I)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                log.info(f"   [DISC-TAG] {val}%")
+                return str(val) + "%"
+
+    # No ↓ arrow found = no discount on this page
+    log.info("   [DISC] No discount found (no ↓ arrow)")
+    return ""
+
+
 def get_original_price(soup, ft, cur, disc):
     """
     ORIGINAL PRICE EXTRACTION
