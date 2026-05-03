@@ -388,86 +388,52 @@ def get_current_price(soup, ft):
 # ══════════════════════════════════════════════════════════════════════════════
 def get_discount(soup, ft):
     """
-    DISCOUNT EXTRACTION — SINGLE FOCUSED METHOD
-    =============================================
-    Visual pattern: ↓69%  3,499  ₹1,099
-    The ↓ arrow is a CSS/SVG element — NOT in plain text.
-    The "69%" IS in a specific HTML tag.
+    DISCOUNT — Pattern: ↓70%  2,999  ₹899
+    "70%" is in a standalone tag, large green bold text.
+    Arrow (↓) is CSS — not in text. "70%" IS in text.
 
-    So: find the tag containing ONLY "X%" or "X% off" near prices.
-    That tag = discount badge.
+    Strikethrough digit reference for original price matching:
+      0̶ = oval with line  (open in middle, line cuts through)
+      1̶ = vertical bar with line
+      2̶ = curve+diagonal+base, line through
+      3̶ = two bumps right side, line through
+      4̶ = angle shape, line through
+      5̶ = flat top + curve + flat bottom, line through
+      6̶ = oval with tail top, line through
+      7̶ = flat top + diagonal, line through
+      8̶ = TWO ovals stacked (≠ zero which has ONE oval), line through
+      9̶ = oval on top + tail down, line through
     """
 
-    # ── Step 1: Known Flipkart discount CSS classes ───────────────────────────
-    # These are the actual classes Flipkart uses for the green discount badge
-    for sel in [
-        "div._1psv1zeb9._1psv1ze0._1psv1zedr",
-        "div.UkUFwK",
-        "span.UkUFwK",
-        "div._3Ay6Sb._31Dcoz span",
-        "div.VGWC\+T span",
-        "span._2p6lqe",
-        "div.pqHniX",
-    ]:
-        try:
-            tag = soup.select_one(sel)
-        except Exception:
-            continue
-        if tag:
+    def find_disc(s, t):
+        # Search every tag for pattern containing X% (1-2 digits + %)
+        # Be flexible: tag text can be "70%", "70% off", "  70%  "
+        for tag in s.find_all(["div", "span"]):
             text = safe(tag).strip()
+            if not text:
+                continue
+            # Tag must be short (discount badge is never long)
+            if len(text) > 15:
+                continue
+            # Find X% pattern anywhere in this short text
             m = re.search(r"(\d{1,2})\s*%", text)
             if m:
                 val = int(m.group(1))
                 if 1 <= val <= 99:
-                    log.info(f"   [DISC-CSS {val}%] via {sel}")
-                    return str(val) + "%"
+                    # Confirm: this % is NOT inside a "Ratings" or review context
+                    if "rating" not in text.lower() and "review" not in text.lower():
+                        return str(val) + "%"
+        return ""
 
-    # ── Step 2: Find tag that contains EXACTLY "X%" or "X% off" ──────────────
-    # Discount badge is always a short standalone tag
-    # Must be ≤15 chars and contain a number followed by %
-    for tag in soup.find_all(["div", "span"]):
-        text = safe(tag).strip()
-        if not text or len(text) > 15:
-            continue
-        # Must be purely a discount value — no other words except "off"
-        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", text, re.I)
-        if m:
-            val = int(m.group(1))
-            if 1 <= val <= 99:
-                # Verify: this tag must be a leaf (no nested price divs)
-                # to avoid picking up bank offer %
-                children_text = "".join(c.get_text() for c in tag.children
-                                       if hasattr(c, "get_text"))
-                if len(children_text) <= 15:
-                    log.info(f"   [DISC-TAG {val}%]")
-                    return str(val) + "%"
-
-    # ── Step 3: Arrow in full text (arrow as actual Unicode char) ─────────────
-    # Sometimes Flipkart DOES include arrow as Unicode in text
-    m = re.search(
-        r"[↓↘▼⬇⇩]"
-        r"\s{0,3}(\d{1,2})\s{0,2}%",
-        ft
-    )
-    if m:
-        val = int(m.group(1))
-        if 1 <= val <= 99:
-            log.info(f"   [DISC-ARROW {val}%]")
-            return str(val) + "%"
-
-    # ── Step 4: "X% off" in full text — anti-bank filter ─────────────────────
-    bank_kw = ["bank", "credit", "debit", "hdfc", "sbi", "axis",
-               "icici", "cashback", "upi", "emi", "kotak", "rbl",
-               "paytm", "mobikwik", "bhim", "rupay"]
-    for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
-        val = int(m.group(1))
-        if not (1 <= val <= 99):
-            continue
-        ctx = ft[max(0, m.start()-80): m.end()+40].lower()
-        if not any(kw in ctx for kw in bank_kw):
-            log.info(f"   [DISC-TEXT {val}%]")
-            return str(val) + "%"
-
+    disc = find_disc(soup, ft)
+    if disc:
+        # Verify: find this same number at least once more in page text
+        disc_num = disc.replace("%","")
+        count = ft.count(disc_num + "%")
+        if count >= 1:
+            log.info(f"   [DISC-OK {disc}] found {count}x in page")
+            return disc
+    
     log.info("   [DISC] Not found")
     return ""
 
@@ -1127,26 +1093,31 @@ def process_table(client, cfg):
 
         time.sleep(1)
 
-        # Pass 2: RENDER — only if rating or reviews missing
-        if not reviews or not rating:
-            log.info("   Pass2 (RENDER)...")
+        # Pass 2: RENDER — if disc missing OR reviews/rating missing
+        # Per user: credits don't matter, accuracy does
+        if not disc or not reviews or not rating:
+            reason = []
+            if not disc: reason.append("no disc")
+            if not reviews: reason.append("no reviews")
+            if not rating: reason.append("no rating")
+            log.info(f"   Pass2 (RENDER) [{', '.join(reason)}]...")
             soup2 = fetch(url, render=True)
             if soup2:
                 ft2 = soup2.get_text(" ", strip=True)
+                if not disc:
+                    disc = get_discount(soup2, ft2)
+                    if disc and not orig:
+                        orig = get_original_price(soup2, ft2, cur, disc)
                 r2  = get_rating(soup2, ft2)
                 rv2 = extract_review_number(soup2, ft2, r2, disc)
                 if not rating:  rating  = r2
                 if not reviews: reviews = rv2
                 if not cur:     cur     = get_current_price(soup2, ft2)
-                if not disc:
-                    disc = get_discount(soup2, ft2)
-                    if disc and not orig:
-                        orig = get_original_price(soup2, ft2, cur, disc)
                 if not orig and disc:
                     orig = get_original_price(soup2, ft2, cur, disc)
-                log.info(f"   Pass2: rating={rating} reviews={reviews}")
+                log.info(f"   Pass2: disc={disc} rating={rating} reviews={reviews}")
         else:
-            log.info("   Pass2 skipped ✅ credits saved")
+            log.info("   Pass2 skipped ✅")
 
         # Math fallback: only cur+orig → disc (no auto-discount)
         cur, orig, disc = math_fallbacks(cur, orig, disc)
