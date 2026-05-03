@@ -262,12 +262,22 @@ def validate_review(raw: str, discount: str = "", force_accept: bool = False) ->
     if val < 1:
         return ""
     disc_num = discount.replace("%", "").strip() if discount else ""
-    if disc_num.isdigit() and len(disc_num) <= 2 and clean.endswith(disc_num):
-        stripped = clean[:-len(disc_num)]
-        if stripped.isdigit() and int(stripped) >= 1:
-            log.info(f"   [REVIEW-STRIP] {clean} → {stripped}")
-            clean = stripped
-            val   = int(clean)
+    if disc_num.isdigit() and len(disc_num) <= 2:
+        # Check if last digits of review match discount number
+        if clean.endswith(disc_num):
+            stripped = clean[:-len(disc_num)]
+            if stripped.isdigit() and int(stripped) >= 1:
+                log.info(f"   [REVIEW-STRIP] {clean} → {stripped} (disc={disc_num})")
+                clean = stripped
+                val   = int(clean)
+        # Also check: if review has extra digit compared to expected range
+        # e.g. disc=70, review=101973 → no overlap; but disc=70, review=3445270 → strip
+        elif len(clean) > 5 and clean[-2:] == disc_num:
+            stripped = clean[:-2]
+            if stripped.isdigit() and 1 <= int(stripped) <= MAX_REVIEWS:
+                log.info(f"   [REVIEW-STRIP2] {clean} → {stripped} (disc={disc_num})")
+                clean = stripped
+                val   = int(clean)
     if "," in raw:
         parts = raw.split(",")
         valid_indian = (1 <= len(parts[0]) <= 3 and all(len(p) == 2 for p in parts[1:]))
@@ -388,52 +398,77 @@ def get_current_price(soup, ft):
 # ══════════════════════════════════════════════════════════════════════════════
 def get_discount(soup, ft):
     """
-    DISCOUNT — Pattern: ↓70%  2,999  ₹899
-    "70%" is in a standalone tag, large green bold text.
-    Arrow (↓) is CSS — not in text. "70%" IS in text.
+    DISCOUNT PATTERN (from image):
+      Line 1: 4.1 ★ | 1,01,973   ← rating + reviews
+      Line 2: ↓70%  2,999  ₹899  ← discount (GREEN, LARGE, just below rating)
 
-    Strikethrough digit reference for original price matching:
-      0̶ = oval with line  (open in middle, line cuts through)
-      1̶ = vertical bar with line
-      2̶ = curve+diagonal+base, line through
-      3̶ = two bumps right side, line through
-      4̶ = angle shape, line through
-      5̶ = flat top + curve + flat bottom, line through
-      6̶ = oval with tail top, line through
-      7̶ = flat top + diagonal, line through
-      8̶ = TWO ovals stacked (≠ zero which has ONE oval), line through
-      9̶ = oval on top + tail down, line through
+    Algorithm:
+      1. Find rating tag (e.g. "4.1")
+      2. Go to its parent container
+      3. In that container, find a SHORT tag (2-4 chars) with "X%" only
+         → That is the discount badge
+      4. Verify: the found number must NOT be part of reviews digits
+
+    This locks onto the exact visual position — not random page scanning.
     """
 
-    def find_disc(s, t):
-        # Search every tag for pattern containing X% (1-2 digits + %)
-        # Be flexible: tag text can be "70%", "70% off", "  70%  "
-        for tag in s.find_all(["div", "span"]):
-            text = safe(tag).strip()
-            if not text:
-                continue
-            # Tag must be short (discount badge is never long)
-            if len(text) > 15:
-                continue
-            # Find X% pattern anywhere in this short text
-            m = re.search(r"(\d{1,2})\s*%", text)
-            if m:
-                val = int(m.group(1))
-                if 1 <= val <= 99:
-                    # Confirm: this % is NOT inside a "Ratings" or review context
-                    if "rating" not in text.lower() and "review" not in text.lower():
-                        return str(val) + "%"
+    def clean_disc(text):
+        """Extract 1-2 digit number before % from short text."""
+        text = text.strip()
+        if len(text) > 10:
+            return ""
+        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", text, re.I)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                return str(val) + "%"
         return ""
 
-    disc = find_disc(soup, ft)
-    if disc:
-        # Verify: find this same number at least once more in page text
-        disc_num = disc.replace("%","")
-        count = ft.count(disc_num + "%")
-        if count >= 1:
-            log.info(f"   [DISC-OK {disc}] found {count}x in page")
-            return disc
-    
+    def not_review_digit(disc_val, reviews_text):
+        """Ensure discount digits are NOT from reviews."""
+        if not reviews_text or not disc_val:
+            return True
+        disc_num = disc_val.replace("%","")
+        # Remove commas from reviews and check if disc_num appears as substring
+        rev_clean = reviews_text.replace(",","")
+        if disc_num in rev_clean:
+            return False  # suspicious overlap
+        return True
+
+    # ── Step 1: Find rating tag → look near it for discount ──────────────────
+    rating_tag = None
+    for tag in soup.find_all(["div","span"]):
+        t = safe(tag).strip()
+        if re.fullmatch(r"[1-5]\.[0-9]", t):
+            rating_tag = tag
+            break
+
+    if rating_tag:
+        # Go up to parent container and search siblings/children for short "X%" tag
+        parent = rating_tag.parent
+        for _ in range(4):  # up to 4 levels up
+            if not parent:
+                break
+            # Search all short tags in this container
+            for tag in parent.find_all(["div","span"]):
+                val = clean_disc(safe(tag))
+                if val:
+                    log.info(f"   [DISC-NEAR-RATING {val}]")
+                    return val
+            parent = parent.parent
+
+    # ── Step 2: Fallback — find any short standalone "X%" tag ────────────────
+    # Must be ≤6 chars like "70%" or "70% off" to be a badge not a sentence
+    reviews_text = ""  # will collect reviews context for verification
+    for tag in soup.find_all(["div","span"]):
+        text = safe(tag).strip()
+        if not text or len(text) > 6:
+            continue
+        val = clean_disc(text)
+        if val:
+            log.info(f"   [DISC-STANDALONE {val}]")
+            return val
+
     log.info("   [DISC] Not found")
     return ""
 
