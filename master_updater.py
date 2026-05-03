@@ -388,122 +388,87 @@ def get_current_price(soup, ft):
 # ══════════════════════════════════════════════════════════════════════════════
 def get_discount(soup, ft):
     """
-    DISCOUNT EXTRACTION — ADVANCED
-    ================================
-    From image analysis:
-      Pattern: ↓78%  4,999  ₹1,099
-      - ↓ = green down arrow (Unicode)
-      - 78 = 1-2 digit number
-      - % = percent sign
+    DISCOUNT EXTRACTION — SINGLE FOCUSED METHOD
+    =============================================
+    Visual pattern: ↓69%  3,499  ₹1,099
+    The ↓ arrow is a CSS/SVG element — NOT in plain text.
+    The "69%" IS in a specific HTML tag.
 
-    The arrow + number + % always appear TOGETHER.
-    No spaces needed between them in code — be flexible.
-
-    iPhone example: No ↓ anywhere → disc = "" (correct)
-
-    6 methods, ordered by precision:
+    So: find the tag containing ONLY "X%" or "X% off" near prices.
+    That tag = discount badge.
     """
 
-    # ── M1: Arrow directly attached to number and % ──────────────────────────
-    # Pattern: ↓78% or ↓ 78 % or ↓78 %
-    # Unicode arrows used by Flipkart:
-    #   ↓ U+2193  ↘ U+2198  ▼ U+25BC  ⬇ U+2B07
+    # ── Step 1: Known Flipkart discount CSS classes ───────────────────────────
+    # These are the actual classes Flipkart uses for the green discount badge
+    for sel in [
+        "div._1psv1zeb9._1psv1ze0._1psv1zedr",
+        "div.UkUFwK",
+        "span.UkUFwK",
+        "div._3Ay6Sb._31Dcoz span",
+        "div.VGWC\+T span",
+        "span._2p6lqe",
+        "div.pqHniX",
+    ]:
+        try:
+            tag = soup.select_one(sel)
+        except Exception:
+            continue
+        if tag:
+            text = safe(tag).strip()
+            m = re.search(r"(\d{1,2})\s*%", text)
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    log.info(f"   [DISC-CSS {val}%] via {sel}")
+                    return str(val) + "%"
+
+    # ── Step 2: Find tag that contains EXACTLY "X%" or "X% off" ──────────────
+    # Discount badge is always a short standalone tag
+    # Must be ≤15 chars and contain a number followed by %
+    for tag in soup.find_all(["div", "span"]):
+        text = safe(tag).strip()
+        if not text or len(text) > 15:
+            continue
+        # Must be purely a discount value — no other words except "off"
+        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", text, re.I)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                # Verify: this tag must be a leaf (no nested price divs)
+                # to avoid picking up bank offer %
+                children_text = "".join(c.get_text() for c in tag.children
+                                       if hasattr(c, "get_text"))
+                if len(children_text) <= 15:
+                    log.info(f"   [DISC-TAG {val}%]")
+                    return str(val) + "%"
+
+    # ── Step 3: Arrow in full text (arrow as actual Unicode char) ─────────────
+    # Sometimes Flipkart DOES include arrow as Unicode in text
     m = re.search(
-        r"[↓↘▼⬇⇩⤵]"   # arrow char
-        r"\s{0,3}"                                    # optional spaces
-        r"(\d{1,2})"                                  # 1-2 digit discount
-        r"\s{0,2}%",                                  # percent sign
+        r"[↓↘▼⬇⇩]"
+        r"\s{0,3}(\d{1,2})\s{0,2}%",
         ft
     )
     if m:
         val = int(m.group(1))
         if 1 <= val <= 99:
-            log.info(f"   [DISC-M1 ↓{val}%]")
+            log.info(f"   [DISC-ARROW {val}%]")
             return str(val) + "%"
 
-    # ── M2: CSS class for Flipkart discount badge ─────────────────────────────
-    # Flipkart renders discount in a specific div with these classes
-    for sel in [
-        "div._1psv1zeb9._1psv1ze0._1psv1zedr",
-        "div.UkUFwK",
-        "span.UkUFwK",
-        "div._3Ay6Sb",
-    ]:
-        tag = soup.select_one(sel)
-        if tag:
-            text = safe(tag)
-            m = re.search(r"(\d{1,2})\s*%", text)
-            if m:
-                val = int(m.group(1))
-                if 1 <= val <= 99:
-                    log.info(f"   [DISC-M2-CSS {val}%]")
-                    return str(val) + "%"
-
-    # ── M3: Find any tag where ONLY content is "X% off" ─────────────────────
-    # Short tags (≤20 chars) that are discount badges
-    for tag in soup.find_all(["div", "span"]):
-        text = safe(tag).strip()
-        if not text or len(text) > 20:
-            continue
-        # Must end with "% off" or just "%"
-        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", text, re.I)
-        if m:
-            val = int(m.group(1))
-            if 1 <= val <= 99:
-                log.info(f"   [DISC-M3-TAG {val}%]")
-                return str(val) + "%"
-
-    # ── M4: Look for arrow in individual tags ─────────────────────────────────
-    # Sometimes arrow and % are in same tag
-    for tag in soup.find_all(["div", "span"]):
-        text = safe(tag).strip()
-        if not text or len(text) > 30:
-            continue
-        m = re.search(
-            r"[↓↘▼⬇⇩]\s*(\d{1,2})\s*%",
-            text
-        )
-        if m:
-            val = int(m.group(1))
-            if 1 <= val <= 99:
-                log.info(f"   [DISC-M4-TAGARROW {val}%]")
-                return str(val) + "%"
-
-    # ── M5: Scan full text — "X% off" with anti-bank-offer filter ────────────
-    bank_kw = ["bank", "credit card", "debit card", "hdfc", "sbi", "axis",
-                "icici", "cashback", "upi", "emi", "kotak", "rbl",
-                "paytm", "mobikwik", "bhim", "rupay"]
+    # ── Step 4: "X% off" in full text — anti-bank filter ─────────────────────
+    bank_kw = ["bank", "credit", "debit", "hdfc", "sbi", "axis",
+               "icici", "cashback", "upi", "emi", "kotak", "rbl",
+               "paytm", "mobikwik", "bhim", "rupay"]
     for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
         val = int(m.group(1))
         if not (1 <= val <= 99):
             continue
         ctx = ft[max(0, m.start()-80): m.end()+40].lower()
         if not any(kw in ctx for kw in bank_kw):
-            log.info(f"   [DISC-M5-TEXT {val}%]")
+            log.info(f"   [DISC-TEXT {val}%]")
             return str(val) + "%"
 
-    # ── M6: JSON-LD structured data ───────────────────────────────────────────
-    for sc in soup.find_all("script", {"type": "application/ld+json"}):
-        try:
-            obj = json.loads(sc.string or "")
-            items = obj if isinstance(obj, list) else [obj]
-            for item in items:
-                offers = item.get("offers", {})
-                if isinstance(offers, list):
-                    offers = offers[0] if offers else {}
-                # priceSpecification or discount fields
-                for key in ["discount", "discountPercentage"]:
-                    raw = str(offers.get(key, ""))
-                    m = re.search(r"(\d{1,2})", raw)
-                    if m:
-                        val = int(m.group(1))
-                        if 1 <= val <= 99:
-                            log.info(f"   [DISC-M6-JSONLD {val}%]")
-                            return str(val) + "%"
-        except:
-            pass
-
-    log.info("   [DISC] Not found — no ↓ arrow on page")
+    log.info("   [DISC] Not found")
     return ""
 
 
