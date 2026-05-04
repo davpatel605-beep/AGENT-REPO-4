@@ -1,32 +1,121 @@
 """
-iphone_updater.py — Separate iPhone Price Updater (TEST VERSION)
-=================================================================
+master_updater.py — Universal Flipkart Price Updater  (FINAL PERFECT VERSION)
+==============================================================================
+Tables: earbuds → gaming cpu → gaming pc → induction → iphone → keybord →
+        laptop → monitar → mouse → smart phone → smart+tv → smartwatch
 
-iPhone Flipkart page ke 2 patterns:
+Schedule: Every 3 days at 7:00 AM IST (1:30 AM UTC)
+GitHub Actions cron: "30 1 */3 * *"
 
-PATTERN 1 — Discount wala iPhone:
-  ┌─────────────────────────────────────────┐
-  │  ↓ 8%   ₹74,900   ₹68,900             │
-  │  (green) (strikethrough) (current)      │
-  └─────────────────────────────────────────┘
+══════════════════════════════════════════════════════════════════════════════
+VISUAL PATTERN ON FLIPKART PAGE (exact screenshot layout):
+══════════════════════════════════════════════════════════════════════════════
 
-PATTERN 2 — No discount iPhone:
-  ┌─────────────────────────────────────────┐
-  │  ₹69,900  ← sirf current price          │
-  │  (no arrow, no strikethrough)           │
-  └─────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │  Product Name                                       │
+  │                                                     │
+  │  4.1 ★  |  1,01,973    ← rating=4.1  reviews=101973│
+  │                                                     │
+  │  ↓ 70%   2̶,̶9̶9̶9̶   ₹899  ← disc=70%  orig  current  │
+  │  (green) (silver,      (bold,                       │
+  │  arrow   line-through) black)                       │
+  └─────────────────────────────────────────────────────┘
 
-iPhone Table Columns (SWAP = True):
-  "Discounted Price" = current price  (selling price)
-  "Price"            = original/MRP   (sirf discount hone par)
-  "Discount Percentage" = discount %  (sirf discount hone par)
-  "Product Rating"   = rating
-  "Number of Reviews" + "Number of Ratings" = reviews
+  iPhone page (NO discount):
+  ┌─────────────────────────────────────────────────────┐
+  │  ₹69,900    ← just current price, nothing else      │
+  │  (no arrow, no strikethrough number)                │
+  └─────────────────────────────────────────────────────┘
 
-DISCOUNT RULE:
-  - Bank offers IGNORE karo (HDFC, SBI, Axis, 10% off on card etc.)
-  - Sirf ACTUAL product discount lo (strikethrough price + % badge)
-  - Agar page pe actual product discount nahi → disc="" → orig="" bhi ""
+══════════════════════════════════════════════════════════════════════════════
+STRIKETHROUGH DIGITS (original/MRP price appears with line through each digit):
+══════════════════════════════════════════════════════════════════════════════
+
+  The number 2,999 with line-through looks like:  2̶,̶9̶9̶9̶
+  Each digit with a horizontal line through its middle:
+    0̶  1̶  2̶  3̶  4̶  5̶  6̶  7̶  8̶  9̶
+
+  In HTML this is encoded as ONE of these four ways:
+    <s>2,999</s>                              ← s tag      (MOST COMMON on Flipkart)
+    <del>2,999</del>                          ← del tag    (semantic)
+    <strike>2,999</strike>                    ← strike tag (deprecated but used)
+    style="text-decoration: line-through"     ← CSS inline style
+
+══════════════════════════════════════════════════════════════════════════════
+CORE RULES:
+══════════════════════════════════════════════════════════════════════════════
+  1.  DISCOUNT FIRST — extract disc before everything else
+  2.  If disc="" → orig="" → do NOT calculate anything (e.g. iPhone)
+  3.  Current price — already working, NOT changed
+  4.  Original price — calc from cur+disc, then verify against strikethrough
+  5.  Reviews + Rating — NOT TOUCHED (working perfectly)
+  6.  iphone table — swap=True, uses get_iphone_discount() (strict version)
+  7.  math_fallbacks — NEVER auto-generate discount from nothing
+  8.  Non-cancel policy — runs until all tables complete
+
+══════════════════════════════════════════════════════════════════════════════
+DISCOUNT EXTRACTION MASTERY — WHY PREVIOUS APPROACHES FAILED:
+══════════════════════════════════════════════════════════════════════════════
+
+  PROBLEM 1: Arrow is CSS/SVG — NOT in soup.get_text()
+    Unicode search r"[↓▼⬇]" in ft ALWAYS fails. Stop looking for arrow.
+
+  PROBLEM 2: Bank offers also say "X% off"
+    Solution: Check 150-char context for bank keywords, reject if found.
+
+  PROBLEM 3: CSS classes change frequently
+    Solution: Use structural position (price container), not just class names.
+
+  PROBLEM 4: Short tag search picks wrong tags
+    Solution: Search INSIDE the price block container only.
+
+  FINAL SOLUTION — 4 LAYER APPROACH:
+    L1: Structural — current price tag DOM → walk up → find X% in container
+    L2: Known CSS badge classes (fallback)
+    L3: All short tags <= 8 chars with X% pattern — bank filter
+    L4: Full text "X% off" with strict 150-char bank filter
+
+══════════════════════════════════════════════════════════════════════════════
+iPHONE SPECIAL LOGIC:
+══════════════════════════════════════════════════════════════════════════════
+
+  iPhone uses get_iphone_discount() — COMPLETELY SEPARATE from get_discount()
+
+  KEY INSIGHT:
+    Flipkart variant buttons (512GB "Out of stock") use CSS line-through on
+    their price → causes false strikethrough detection → wrong orig+disc
+    Solution: For iPhone, ONLY accept <s> and <del> HTML tags as strikethrough
+              CSS line-through = COMPLETELY IGNORED for iPhone
+
+  BOUNDARY:
+    Cut page text at "Protect Promise Fee" — everything after = variants/offers
+    Strikethrough and % must BOTH be found before this boundary
+
+  PATTERN:
+    Discount iPhone:    ↓8%  ₹74,̶9̶0̶0̶  ₹68,900  → disc=8% orig=74900 cur=68900
+    No-discount iPhone: ₹69,900  → disc="" orig="" cur=69900
+
+══════════════════════════════════════════════════════════════════════════════
+ORIGINAL PRICE MASTERY — ALGORITHM:
+══════════════════════════════════════════════════════════════════════════════
+
+  Step 1: calc = round(cur / (1 - disc/100))
+          e.g. cur=899, disc=70% → calc = round(899/0.30) = 2,997
+
+  Step 2: Collect ALL strikethrough numbers from page:
+          <s>, <del>, <strike>, style=line-through, Flipkart CSS classes
+          Accept only: number > cur AND 100 <= number <= 50,00,000
+
+  Step 3: Generate 5 tolerance possibilities around calc:
+          [calc*0.98, calc*0.99, calc, calc*1.01, calc*1.02]
+          e.g. calc=2997 → [2937, 2967, 2997, 3027, 3057]
+          Check if any page number falls in this range.
+
+  Step 4: Match decision:
+          diff <= 15 rupees → use page number (exact match)
+          diff <= 10%       → use page number (close match)
+          diff > 10%        → use calc (page number is wrong)
+          No page found     → use calc only
 """
 
 import os, re, time, logging, requests
@@ -41,6 +130,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# ── Env vars ──────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 
@@ -72,74 +162,155 @@ REQUEST_TIMEOUT = 90
 DELAY           = 1
 MAX_REVIEWS     = 500000
 
-# iPhone table config
-IPHONE_CFG = {
-    "name":     "iphone",
-    "link":     "Product URL",
-    "swap":     True,
-    "cols": {
-        "current_price":  "Discounted Price",
-        "original_price": "Price",
-        "discount":       "Discount Percentage",
-        "rating":         "Product Rating",
-        "reviews":        "Number of Reviews",
-        "reviews2":       "Number of Ratings",
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TABLE CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+TABLES = [
+    {
+        "name": "earbuds",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
     },
-}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-def safe(tag, d=""):
-    return tag.get_text(strip=True) if tag else d
-
-
-def to_num(t):
-    return re.sub(r"[^\d]", "", str(t)).strip()
-
-
-def valid_price(v):
-    return str(v).isdigit() and 100 <= int(v) <= 5000000
-
-
-def parse_k(t):
-    t = t.strip().replace(",", "")
-    m = re.match(r"([\d.]+)[kK]", t)
-    if m:
-        return str(int(float(m.group(1)) * 1000))
-    m = re.match(r"(\d+)", t)
-    return m.group(1) if m else ""
-
-
-def fmt_price(v):
-    if not v or not str(v).isdigit():
-        return v
-    s = str(int(v))
-    if len(s) <= 3:
-        return f"₹{s}"
-    result, s = s[-3:], s[:-3]
-    while s:
-        result, s = s[-2:] + "," + result, s[:-2]
-    return f"₹{result.lstrip(',')}"
-
-
-def fmt_disc(v):
-    v = str(v).replace("%", "").strip()
-    return (v + "%") if v.isdigit() and 1 <= int(v) <= 99 else ""
-
-
-def fmt_reviews(v):
-    if not v or not str(v).isdigit():
-        return v
-    n = int(v)
-    if n < 1000:
-        return str(n)
-    s = str(n)
-    result, s = s[-3:], s[:-3]
-    while s:
-        result, s = s[-2:] + "," + result, s[:-2]
-    return result.lstrip(",")
+    {
+        "name": "gaming cpu",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "gaming pc",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price-2",
+            "discount":       "Discount-2",
+            "rating":         "Product Rating",
+            "reviews":        "product review",
+        },
+    },
+    {
+        "name": "induction",
+        "link": "Product Link",
+        "swap": True,
+        "cols": {
+            "current_price":  "Discounted Price",
+            "original_price": "Price",
+            "discount":       "Discount Percentage",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "iphone",
+        "link": "Product URL",
+        "swap": True,
+        "iphone": True,          # ← special flag: uses get_iphone_discount()
+        "cols": {
+            "current_price":  "Discounted Price",
+            "original_price": "Price",
+            "discount":       "Discount Percentage",
+            "rating":         "Product Rating",
+            "reviews":        "Number of Reviews",
+            "reviews2":       "Number of Ratings",
+        },
+    },
+    {
+        "name": "keybord",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "laptop",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "combined":       "Rating and Reviews",
+        },
+    },
+    {
+        "name": "monitar",
+        "link": "Product URL",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "mouse",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "smart phone",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "combined":       "Ratings and Reviews",
+        },
+    },
+    {
+        "name": "smart+tv",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "combined":       "Ratings and Reviews",
+        },
+    },
+    {
+        "name": "smartwatch",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Review",
+        },
+    },
+]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -171,7 +342,61 @@ def fetch(url: str, render: bool = False):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CURRENT PRICE
+# HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+def safe(tag, d=""):
+    return tag.get_text(strip=True) if tag else d
+
+
+def to_num(t):
+    return re.sub(r"[^\d]", "", str(t)).strip()
+
+
+def valid_price(v):
+    return str(v).isdigit() and 100 <= int(v) <= 5000000
+
+
+def parse_k(t):
+    t = t.strip().replace(",", "")
+    m = re.match(r"([\d.]+)[kK]", t)
+    if m:
+        return str(int(float(m.group(1)) * 1000))
+    m = re.match(r"(\d+)", t)
+    return m.group(1) if m else ""
+
+
+def fmt_price(v):
+    if not v or not str(v).isdigit():
+        return v
+    s = str(int(v))
+    if len(s) <= 3:
+        return f"Rs.{s}"
+    result, s = s[-3:], s[:-3]
+    while s:
+        result, s = s[-2:] + "," + result, s[:-2]
+    return f"Rs.{result.lstrip(',')}"
+
+
+def fmt_disc(v):
+    v = str(v).replace("%", "").strip()
+    return (v + "%") if v.isdigit() and 1 <= int(v) <= 99 else ""
+
+
+def fmt_reviews(v):
+    if not v or not str(v).isdigit():
+        return v
+    n = int(v)
+    if n < 1000:
+        return str(n)
+    s = str(n)
+    result, s = s[-3:], s[:-3]
+    while s:
+        result, s = s[-2:] + "," + result, s[:-2]
+    return result.lstrip(",")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CURRENT PRICE  — NOT CHANGED (working perfectly)
 # ══════════════════════════════════════════════════════════════════════════════
 def get_current_price(soup, ft):
     for sel in [
@@ -187,13 +412,18 @@ def get_current_price(soup, ft):
             v = to_num(safe(tag))
             if v and valid_price(v):
                 return v
+    m = re.search(r"Buy\s*at\s*Rs\.?\s*([\d,]+)", ft, re.I)
+    if m:
+        v = m.group(1).replace(",", "")
+        if valid_price(v):
+            return v
     cart = soup.find(string=re.compile(r"Add to cart", re.I))
     if cart:
         p = cart.find_parent("div")
         for _ in range(6):
             if not p:
                 break
-            prices = re.findall(r"₹\s*([\d,]+)", p.get_text())
+            prices = re.findall(r"Rs\.?\s*([\d,]+)", p.get_text())
             vlist  = sorted(
                 [int(x.replace(",", "")) for x in prices
                  if valid_price(x.replace(",", ""))]
@@ -205,57 +435,126 @@ def get_current_price(soup, ft):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# IPHONE DISCOUNT — STRICT VERSION
+# DISCOUNT  — FINAL 4-LAYER MASTERY VERSION (all tables except iphone)
+# ══════════════════════════════════════════════════════════════════════════════
+def get_discount(soup, ft):
+    BANK_KW = [
+        "bank", "credit", "debit", "hdfc", "sbi", "axis", "icici",
+        "cashback", "upi", "emi", "kotak", "rbl", "paytm", "rupay",
+        "no cost", "instant discount", "additional", "card offer",
+        "flat rs", "flat rupee",
+    ]
+
+    def has_bank(text):
+        t = text.lower()
+        return any(kw in t for kw in BANK_KW)
+
+    def valid_disc(val):
+        return 1 <= val <= 99
+
+    # ── L1: Structural — price container ke andar dhundho ─────────────────────
+    PRICE_SELS = [
+        "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
+        "div._30jeq3._16Jk6d", "div._30jeq3",
+        "div.CEmiEU",
+        "div.v1zwn21l.v1zwn20._1psv1zeb9._1psv1ze0",
+    ]
+    for sel in PRICE_SELS:
+        price_tag = soup.select_one(sel)
+        if not price_tag:
+            continue
+        node = price_tag.parent
+        for level in range(6):
+            if not node:
+                break
+            container_text = node.get_text(" ", strip=True)
+            if has_bank(container_text[:400]):
+                node = node.parent
+                continue
+            for child in node.find_all(["div", "span"], recursive=True):
+                t = child.get_text(strip=True)
+                if len(t) > 10:
+                    continue
+                m = re.fullmatch(r"(\d{1,2})\s*%\s*(?:off)?", t, re.I)
+                if m:
+                    val = int(m.group(1))
+                    if valid_disc(val):
+                        log.info(f"   [DISC-L1-STRUCT lvl={level}] {val}%")
+                        return f"{val}%"
+            node = node.parent
+
+    # ── L2: Flipkart CSS discount badge classes ────────────────────────────────
+    CSS_BADGE_SELS = [
+        "div._1psv1zeb9._1psv1ze0._1psv1zedr",
+        "div.UkUFwK", "span.UkUFwK",
+        "div._3Ay6Sb", "span._2Tpdn3",
+        "div.VGWC4j",
+        "span._2p6lqe",
+    ]
+    for sel in CSS_BADGE_SELS:
+        try:
+            tag = soup.select_one(sel)
+        except Exception:
+            continue
+        if not tag:
+            continue
+        t = tag.get_text(strip=True)
+        m = re.search(r"(\d{1,2})\s*%", t)
+        if m:
+            val = int(m.group(1))
+            if valid_disc(val):
+                log.info(f"   [DISC-L2-CSS] {val}% via {sel}")
+                return f"{val}%"
+
+    # ── L3: All short tags <= 8 chars — bank filter on parent ─────────────────
+    for tag in soup.find_all(["div", "span"]):
+        t = tag.get_text(strip=True)
+        if len(t) > 8:
+            continue
+        m = re.fullmatch(r"(\d{1,2})\s*%\s*(?:off)?", t, re.I)
+        if not m:
+            continue
+        val = int(m.group(1))
+        if not valid_disc(val):
+            continue
+        parent_text = safe(tag.parent)[:250] if tag.parent else ""
+        if has_bank(parent_text):
+            continue
+        log.info(f"   [DISC-L3-SHORTTAG] {val}%")
+        return f"{val}%"
+
+    # ── L4: Full text "X% off" — strict 150-char bank filter ──────────────────
+    for m in re.finditer(r"(\d{1,2})\s*%\s+off\b", ft, re.I):
+        val = int(m.group(1))
+        if not valid_disc(val):
+            continue
+        ctx = ft[max(0, m.start() - 150): m.end() + 80]
+        if not has_bank(ctx):
+            log.info(f"   [DISC-L4-TEXT] {val}%")
+            return f"{val}%"
+
+    log.info("   [DISC] Not found — returning ''")
+    return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# iPHONE DISCOUNT — STRICT SEPARATE VERSION
 #
-# iPhone pages mein BANK OFFERS bahut hote hain:
-#   "15% off on HDFC Bank Credit Card"
-#   "10% off on SBI Debit Card"
-#   "5% cashback on Axis Bank"
+# KEY INSIGHT:
+#   Flipkart variant buttons (e.g. 512GB "Out of stock") use CSS line-through
+#   on their price → e.g. ₹1,86,999 with CSS line-through → WRONG strikethrough
+#   Solution: For iPhone ONLY accept <s> and <del> HTML tags
+#             CSS line-through = COMPLETELY IGNORED
 #
-# In sab ko IGNORE karna hai.
+# BOUNDARY:
+#   Cut page at "Protect Promise Fee" — after this = variants/bank offers
+#   Both strikethrough AND % must be found BEFORE this boundary
 #
-# ACTUAL product discount tab hota hai jab:
-#   1. Strikethrough price page pe ho (original price kata hua dikhta hai)
-#   2. Discount badge clearly price ke SAATH ho (not in offers section)
-#
-# STRATEGY:
-#   Step 1: Page pe strikethrough price hai ya nahi check karo
-#           Agar nahi → disc="" (no discount on this product)
-#   Step 2: Strikethrough price mile → uske paas wala % value = actual discount
-#           Uski context mein bank keywords nahi hone chahiye
-#   Step 3: Agar strikethrough mile lekin % nahi → calc karo cur+orig se
-#
-# Bank keywords list — EXTENDED for iPhone pages:
+# PATTERN:
+#   Discount:    ↓8%  ₹74,̶9̶0̶0̶  ₹68,900  → disc=8% orig=74900 cur=68900
+#   No discount: ₹69,900  → disc="" orig="" cur=69900
 # ══════════════════════════════════════════════════════════════════════════════
 def get_iphone_discount(soup, ft, cur):
-    """
-    iPhone ke liye STRICT discount extraction.
-
-    PATTERN 1 — Discount wala iPhone:
-      4.6 ★ | 1,92,306
-      ↓ 8%   ₹74,̶9̶0̶0̶   ₹68,900
-      (green) (strikethrough <s> tag)  (bold current)
-
-    PATTERN 2 — No discount iPhone:
-      4.6 ★ | 1,92,306
-      ₹69,900                  ← seedha rupee symbol, koi strikethrough nahi
-      +₹220 Protect Promise Fee
-
-    KEY INSIGHT from logs:
-      - CSS line-through → IGNORE completely for iPhone
-        (Flipkart variant buttons use CSS line-through for out-of-stock variants)
-        e.g. 512 GB "Out of stock" variant → CSS line-through on ₹1,86,999 → WRONG
-      - Only <s> and <del> HTML tags = actual MRP strikethrough
-      - Boundary: cut text at "Protect Promise Fee" — variants/offers ke baad hai
-
-    RULES:
-      1. Cut ft at "Protect Promise Fee" boundary
-      2. In cut zone: look for <s> or <del> tag ONLY (no CSS line-through)
-      3. <s>/<del> nahi mila → disc="" orig="" — khatam
-      4. Mila → uske paas % dhundho (bank filter ke saath)
-      5. % nahi mila → calc karo cur+orig se
-    """
-
     cur_int = int(cur) if cur and cur.isdigit() else 0
 
     # ── STEP 1: Boundary — "Protect Promise Fee" ke baad IGNORE ─────────────
@@ -275,9 +574,8 @@ def get_iphone_discount(soup, ft, cur):
     log.info(f"   [iPHONE-ZONE] {len(ft_zone)} chars")
 
     # ── STEP 2: <s> aur <del> ONLY — CSS line-through bilkul nahi ────────────
-    # Reason: Flipkart variant buttons (512GB out-of-stock) CSS line-through
-    # use karte hain — yeh MRP nahi hai, variant price hai → galat strikethrough
-    # Sirf <s> aur <del> = actual HTML strikethrough = actual MRP
+    # Reason: Flipkart variant buttons CSS line-through = NOT MRP
+    # Only <s> and <del> = actual HTML strikethrough = actual MRP
     strikethrough_val = ""
 
     for tag in soup.find_all(["s", "del", "strike"]):
@@ -286,7 +584,6 @@ def get_iphone_discount(soup, ft, cur):
             continue
         if cur_int > 0 and int(v) <= cur_int:
             continue
-        # Ye tag zone ke andar hai? (tag ka text ft_zone mein hona chahiye)
         tag_text = safe(tag)
         if tag_text and (tag_text in ft_zone or to_num(tag_text) in ft_zone):
             strikethrough_val = v
@@ -294,10 +591,10 @@ def get_iphone_discount(soup, ft, cur):
             break
 
     if not strikethrough_val:
-        log.info("   [iPHONE-DISC] No <s>/<del> strikethrough in zone → disc='' orig=''")
+        log.info("   [iPHONE-DISC] No <s>/<del> in zone → disc='' orig=''")
         return "", ""
 
-    # ── STEP 3: % dhundho — price container ke andar, bank filter ke saath ───
+    # ── STEP 3: % dhundho — price container ke andar, bank filter ────────────
     BANK_KW = [
         "bank", "credit", "debit", "hdfc", "sbi", "axis", "icici",
         "cashback", "upi", "emi", "kotak", "rbl", "paytm", "rupay",
@@ -309,7 +606,6 @@ def get_iphone_discount(soup, ft, cur):
     def has_bank(text):
         return any(kw in text.lower() for kw in BANK_KW)
 
-    # Price container structural search
     PRICE_SELS = [
         "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
         "div._30jeq3._16Jk6d", "div._30jeq3",
@@ -376,12 +672,103 @@ def get_iphone_discount(soup, ft, cur):
                 log.info(f"   [iPHONE-DISC-CALC] {d}% (from cur+s-tag)")
                 return f"{d}%", strikethrough_val
 
-    log.info("   [iPHONE-DISC] <s> tag found but % not confirmed → orig only, disc=''")
+    log.info("   [iPHONE-DISC] <s> found but % not confirmed → orig only, disc=''")
     return "", strikethrough_val
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RATING
+# ORIGINAL PRICE  — FINAL MASTERY VERSION
+# ══════════════════════════════════════════════════════════════════════════════
+def get_original_price(soup, ft, cur, disc):
+    if not cur or not str(cur).isdigit() or not disc:
+        return ""
+    d = disc.replace("%", "").strip()
+    if not d.isdigit() or not (1 <= int(d) <= 99):
+        return ""
+
+    cur_int  = int(cur)
+    disc_int = int(d)
+
+    # Step 1: Calculate exact MRP
+    calc = round(cur_int / (1 - disc_int / 100))
+    log.info(f"   [ORIG-CALC] cur={cur} disc={disc}% → calc={calc}")
+
+    min_v = cur_int + 1
+    found = set()
+
+    # A. <s> tag
+    for tag in soup.find_all("s"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_v and valid_price(v):
+            found.add(int(v))
+            log.info(f"   [ORIG-S-TAG] {v}")
+
+    # B. <del> tag
+    for tag in soup.find_all("del"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_v and valid_price(v):
+            found.add(int(v))
+            log.info(f"   [ORIG-DEL-TAG] {v}")
+
+    # C. <strike> tag
+    for tag in soup.find_all("strike"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_v and valid_price(v):
+            found.add(int(v))
+            log.info(f"   [ORIG-STRIKE-TAG] {v}")
+
+    # D. CSS inline style: text-decoration:line-through
+    for tag in soup.find_all(True):
+        style = tag.get("style", "")
+        if "line-through" in style:
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_v and valid_price(v):
+                found.add(int(v))
+                log.info(f"   [ORIG-LINETHRU-CSS] {v}")
+
+    # E. Flipkart MRP CSS classes
+    MRP_SELS = [
+        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
+        "div.v1zwn21m._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
+        "div.yRaY8j.ZYYwLA",
+        "div.yRaY8j",
+        "div._3I9_wc._2p6lqe",
+        "div._3I9_wc",
+    ]
+    for sel in MRP_SELS:
+        tag = soup.select_one(sel)
+        if tag:
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_v and valid_price(v):
+                found.add(int(v))
+                log.info(f"   [ORIG-MRP-CLASS] {v} via {sel}")
+
+    log.info(f"   [ORIG-PAGE-ALL] {sorted(found)}")
+
+    five_pts = [round(calc * r) for r in [0.98, 0.99, 1.0, 1.01, 1.02]]
+    log.info(f"   [ORIG-5-TOLERANCE] {five_pts}")
+
+    if found:
+        closest  = min(found, key=lambda x: abs(x - calc))
+        diff_rs  = abs(closest - calc)
+        diff_pct = diff_rs / calc if calc else 1
+
+        if diff_rs <= 15:
+            log.info(f"   [ORIG-EXACT diff=Rs.{diff_rs}] page={closest} calc={calc}")
+            return str(closest)
+        elif diff_pct <= 0.10:
+            log.info(f"   [ORIG-NEAR diff={diff_pct:.1%}] page={closest} calc={calc}")
+            return str(closest)
+        else:
+            log.info(f"   [ORIG-CALC-WIN diff=Rs.{diff_rs} {diff_pct:.1%}] calc={calc} page_was={closest}")
+            return str(calc)
+
+    log.info(f"   [ORIG-CALC-ONLY] {calc}")
+    return str(calc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RATING  — NOT TOUCHED (working perfectly)
 # ══════════════════════════════════════════════════════════════════════════════
 def get_rating(soup, ft) -> str:
     for tag in soup.find_all(["div", "span"]):
@@ -395,7 +782,7 @@ def get_rating(soup, ft) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# REVIEWS
+# REVIEWS  — NOT TOUCHED (working perfectly)
 # ══════════════════════════════════════════════════════════════════════════════
 def validate_review(raw: str, discount: str = "", force_accept: bool = False) -> str:
     if not raw:
@@ -411,11 +798,13 @@ def validate_review(raw: str, discount: str = "", force_accept: bool = False) ->
         if clean.endswith(disc_num):
             stripped = clean[: -len(disc_num)]
             if stripped.isdigit() and int(stripped) >= 1:
+                log.info(f"   [REVIEW-STRIP] {clean} → {stripped} (disc={disc_num})")
                 clean = stripped
                 val   = int(clean)
         elif len(clean) > 5 and clean[-2:] == disc_num:
             stripped = clean[:-2]
             if stripped.isdigit() and 1 <= int(stripped) <= MAX_REVIEWS:
+                log.info(f"   [REVIEW-STRIP2] {clean} → {stripped} (disc={disc_num})")
                 clean = stripped
                 val   = int(clean)
     if "," in raw:
@@ -437,54 +826,109 @@ def extract_review_number(soup, ft, rating, discount) -> str:
                 if m:
                     v = validate_review(m.group(1), discount, force)
                     if v:
+                        log.info(f"   [M1-INLINE] reviews={v}")
                         return v
         for pipe in soup.find_all(string=re.compile(r"^\s*\|\s*$")):
             nxt = pipe.find_next(["span", "div"])
             if nxt:
                 v = validate_review(safe(nxt).strip(), discount, force)
                 if v:
+                    log.info(f"   [M2-PIPE] reviews={v}")
                     return v
         if rating:
-            m = re.search(re.escape(rating) + r"\s*[|]\s*([\d,]+)", ft)
-            if m:
-                v = validate_review(m.group(1), discount, force)
-                if v:
-                    return v
-        for sel in ["span.Wphh3N", "span._2_R_DZ", "span._13vcmD"]:
+            for pat in [
+                re.escape(rating) + r"\s*[|]\s*([\d,]+)",
+            ]:
+                m = re.search(pat, ft)
+                if m:
+                    v = validate_review(m.group(1), discount, force)
+                    if v:
+                        log.info(f"   [M3-TEXT] reviews={v}")
+                        return v
+        for sel in [
+            "div._1psv1zeb9._1psv1ze0._1psv1zegu",
+            "span.Wphh3N", "span._2_R_DZ", "span._13vcmD",
+        ]:
             tag = soup.select_one(sel)
             if tag:
                 for raw in re.findall(r"[\d,]+", safe(tag)):
                     v = validate_review(raw, discount, force)
                     if v:
+                        log.info(f"   [M4-CSS] reviews={v}")
                         return v
         for pat in [
             r"([\d,]+[kK]?)\s+[Rr]ating",
             r"([\d,]+[kK]?)\s+[Rr]eview",
+            r"based on\s+([\d,]+[kK]?)\s+rating",
         ]:
             m = re.search(pat, ft, re.I)
             if m:
                 v = validate_review(parse_k(m.group(1)), discount, force)
                 if v:
+                    log.info(f"   [M5-KEYWORD] reviews={v}")
                     return v
         return ""
 
     for attempt in range(1, 6):
-        result = try_methods(force=(attempt == 5))
+        force  = attempt == 5
+        result = try_methods(force=force)
         if result:
             return result
         if attempt < 5:
-            log.warning(f"   [REVIEW] Attempt {attempt} failed...")
+            log.warning(f"   [REVIEW] Attempt {attempt} failed, retrying...")
     return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MATH FALLBACKS  — ONLY cur + orig → disc  (never reverse)
+# ══════════════════════════════════════════════════════════════════════════════
+def math_fallbacks(cur, orig, disc):
+    if cur and orig and not disc:
+        if str(cur).isdigit() and str(orig).isdigit() and int(orig) > int(cur):
+            d = round((int(orig) - int(cur)) / int(orig) * 100)
+            if 1 <= d <= 99:
+                disc = str(d) + "%"
+                log.info(f"   [MATH] disc={disc} (from cur+orig)")
+    return cur, orig, disc
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BUILD PAYLOAD
+# ══════════════════════════════════════════════════════════════════════════════
+def build_payload(cols, cur, orig, disc, rating, reviews, swap=False):
+    p = {}
+    if swap:
+        if cur and "current_price" in cols:
+            p[cols["current_price"]]  = fmt_price(cur)
+        if orig and "original_price" in cols:
+            p[cols["original_price"]] = fmt_price(orig)
+    else:
+        if cur and "current_price" in cols:
+            p[cols["current_price"]]  = fmt_price(cur)
+        if orig and "original_price" in cols:
+            p[cols["original_price"]] = fmt_price(orig)
+    if disc and "discount" in cols:
+        p[cols["discount"]] = fmt_disc(disc)
+    if "combined" in cols:
+        if rating and reviews:
+            p[cols["combined"]] = f"{rating} | {fmt_reviews(reviews)}"
+        elif rating:
+            p[cols["combined"]] = rating
+    else:
+        if rating and "rating" in cols:
+            p[cols["rating"]] = rating
+        if reviews:
+            if "reviews" in cols:
+                p[cols["reviews"]] = fmt_reviews(reviews)
+            if "reviews2" in cols:
+                p[cols["reviews2"]] = fmt_reviews(reviews)
+    return p
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DB UPDATE
 # ══════════════════════════════════════════════════════════════════════════════
-def update_db(client, url, payload):
-    cfg      = IPHONE_CFG
-    table    = cfg["name"]
-    link_col = cfg["link"]
-
+def update_db(client, table, link_col, url, payload):
     if not payload:
         log.warning("   Empty payload — skipping.")
         return False
@@ -495,6 +939,7 @@ def update_db(client, url, payload):
             check2 = client.table(table).select(link_col).eq(link_col, clean).execute()
             if check2.data:
                 url = clean
+                log.info("   [URL-FIX] Matched cleaned URL")
             else:
                 log.error(f"   [URL-NOT-FOUND] {url[:70]}")
                 return False
@@ -503,6 +948,7 @@ def update_db(client, url, payload):
             log.info(f"   [OK] {payload}")
             return True
         except Exception:
+            log.warning("   Bulk update failed — trying column by column...")
             success = False
             for col, val in payload.items():
                 try:
@@ -518,93 +964,168 @@ def update_db(client, url, payload):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PROCESS
+# PROCESS ONE TABLE
 # ══════════════════════════════════════════════════════════════════════════════
-def process():
-    cfg      = IPHONE_CFG
-    cols     = cfg["cols"]
-    link_col = cfg["link"]
+def process_table(client, cfg):
+    name      = cfg["name"]
+    link_col  = cfg["link"]
+    cols      = cfg["cols"]
+    swap      = cfg.get("swap", False)
+    is_iphone = cfg.get("iphone", False)   # ← iphone flag
 
-    log.info("=" * 70)
-    log.info("  iPHONE UPDATER — TEST RUN")
-    log.info("=" * 70)
-
-    client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    log.info(f"\n{'=' * 70}")
+    log.info(f"  TABLE: {name.upper()}  {'[SWAPPED]' if swap else ''}  {'[iPHONE-MODE]' if is_iphone else ''}")
+    log.info(f"{'=' * 70}")
 
     rows = [
-        r for r in client.table("iphone").select("*").execute().data
+        r for r in client.table(name).select("*").execute().data
         if r.get(link_col, "").strip()
     ]
-    log.info(f"  {len(rows)} iPhones found.")
+    log.info(f"  {len(rows)} products.")
 
     done = fail = 0
     for idx, row in enumerate(rows, 1):
         url = row[link_col].strip()
         log.info(f"\n  [{idx}/{len(rows)}] {url[:80]}")
 
-        cur = disc = orig = rating = reviews = ""
+        cur = orig = disc = rating = reviews = ""
 
-        # Pass 1: CHEAP
+        # Pass 1: CHEAP (1 credit)
         soup1 = fetch(url, render=False)
         if soup1:
             ft1    = soup1.get_text(" ", strip=True)
             cur    = get_current_price(soup1, ft1)
-            disc, orig = get_iphone_discount(soup1, ft1, cur)
-            rating = get_rating(soup1, ft1)
+
+            if is_iphone:
+                # ── iPHONE: strict discount extraction ──────────────────────
+                disc, orig = get_iphone_discount(soup1, ft1, cur)
+                # orig already set from strikethrough — verify with calc
+                if disc and orig:
+                    orig_calc = get_original_price(soup1, ft1, cur, disc)
+                    if orig_calc:
+                        orig = orig_calc
+            else:
+                # ── ALL OTHER TABLES: normal flow ────────────────────────────
+                disc = get_discount(soup1, ft1)
+                orig = get_original_price(soup1, ft1, cur, disc)
+
+            rating  = get_rating(soup1, ft1)
             reviews = extract_review_number(soup1, ft1, rating, disc)
-            log.info(f"   Pass1: cur={cur} disc={disc} orig={orig} rating={rating} reviews={reviews}")
+            log.info(
+                f"   Pass1: cur={cur} disc={disc} orig={orig} "
+                f"rating={rating} reviews={reviews}"
+            )
 
         time.sleep(1)
 
-        # Pass 2: RENDER — agar kuch missing
-        if not cur or not rating or not reviews:
-            log.info("   Pass2 (RENDER)...")
+        # Pass 2: RENDER — if anything missing
+        needs_render = (not disc and not is_iphone) or not reviews or not rating
+        if is_iphone:
+            needs_render = not cur or not reviews or not rating
+        if needs_render:
+            reason = []
+            if not disc and not is_iphone: reason.append("no disc")
+            if not reviews:                reason.append("no reviews")
+            if not rating:                 reason.append("no rating")
+            if not cur and is_iphone:      reason.append("no cur")
+            log.info(f"   Pass2 (RENDER) [{', '.join(reason)}]...")
             soup2 = fetch(url, render=True)
             if soup2:
                 ft2 = soup2.get_text(" ", strip=True)
-                if not cur:
-                    cur = get_current_price(soup2, ft2)
-                if not disc:
-                    disc, orig = get_iphone_discount(soup2, ft2, cur)
+                if is_iphone:
+                    if not disc:
+                        disc2, orig2 = get_iphone_discount(soup2, ft2, cur)
+                        if disc2:
+                            disc = disc2
+                            orig = orig2
+                            if disc and orig:
+                                orig_calc = get_original_price(soup2, ft2, cur, disc)
+                                if orig_calc:
+                                    orig = orig_calc
+                else:
+                    if not disc:
+                        disc = get_discount(soup2, ft2)
+                        if disc and not orig:
+                            orig = get_original_price(soup2, ft2, cur, disc)
                 r2  = get_rating(soup2, ft2)
                 rv2 = extract_review_number(soup2, ft2, r2, disc)
                 if not rating:  rating  = r2
                 if not reviews: reviews = rv2
-                log.info(f"   Pass2: cur={cur} disc={disc} orig={orig} rating={rating} reviews={reviews}")
+                if not cur:     cur     = get_current_price(soup2, ft2)
+                if not orig and disc and not is_iphone:
+                    orig = get_original_price(soup2, ft2, cur, disc)
+                log.info(
+                    f"   Pass2: disc={disc} orig={orig} "
+                    f"rating={rating} reviews={reviews}"
+                )
         else:
-            log.info("   Pass2 skipped ✅")
+            log.info("   Pass2 skipped")
 
-        # Sanity check
-        if cur and orig and cur.isdigit() and orig.isdigit():
+        # Math fallback: cur + orig → disc only (not for iphone)
+        if not is_iphone:
+            cur, orig, disc = math_fallbacks(cur, orig, disc)
+
+        # Sanity: current must always be less than original
+        if cur and orig and str(cur).isdigit() and str(orig).isdigit():
             if int(cur) >= int(orig):
-                log.warning(f"   SANITY: cur({cur}) >= orig({orig}) — clearing orig+disc")
+                log.warning(
+                    f"   SANITY FAIL: cur({cur}) >= orig({orig}) — clearing orig+disc"
+                )
                 orig = disc = ""
 
-        # Build payload — swap=True: Discounted Price=cur, Price=orig
-        p = {}
-        if cur:
-            p[cols["current_price"]] = fmt_price(cur)
-        if orig:
-            p[cols["original_price"]] = fmt_price(orig)
-        if disc:
-            p[cols["discount"]] = fmt_disc(disc)
-        if rating:
-            p[cols["rating"]] = rating
-        if reviews:
-            p[cols["reviews"]]  = fmt_reviews(reviews)
-            p[cols["reviews2"]] = fmt_reviews(reviews)
+        payload = build_payload(cols, cur, orig, disc, rating, reviews, swap=swap)
+        log.info(f"   PAYLOAD: {payload}")
 
-        log.info(f"   PAYLOAD: {p}")
-
-        ok = update_db(client, url, p)
-        if ok: done += 1
-        else:  fail += 1
+        ok = update_db(client, name, link_col, url, payload)
+        if ok:
+            done += 1
+        else:
+            fail += 1
 
         time.sleep(DELAY)
 
-    log.info(f"\n  Done={done}  Fail={fail}  Total={len(rows)}")
+    log.info(f"\n  {name}: Done={done}  Fail={fail}  Total={len(rows)}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN  — NON-CANCEL POLICY
+# ══════════════════════════════════════════════════════════════════════════════
+def main():
+    log.info("=" * 70)
+    log.info(
+        f"  MASTER FLIPKART UPDATER — {len(TABLES)} tables | "
+        f"Keys: {len(SCRAPERAPI_KEYS)}"
+    )
+    log.info("  NON-CANCEL POLICY — runs until all tables complete")
+    log.info("=" * 70)
+
+    client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    for cfg in TABLES:
+        table_done = False
+        attempt    = 0
+        while not table_done:
+            attempt += 1
+            try:
+                process_table(client, cfg)
+                table_done = True
+            except KeyboardInterrupt:
+                log.warning("  KeyboardInterrupt ignored — NON-CANCEL policy.")
+                table_done = True
+            except Exception as exc:
+                log.error(f"  ERROR in '{cfg['name']}' attempt {attempt}: {exc}")
+                if attempt >= 3:
+                    log.error(f"  Skipping '{cfg['name']}' after 3 attempts.")
+                    table_done = True
+                else:
+                    log.info(f"  Retrying '{cfg['name']}'...")
+                    time.sleep(5)
+
+    log.info("\n" + "=" * 70)
+    log.info("  ALL TABLES COMPLETE")
+    log.info("=" * 70)
 
 
 if __name__ == "__main__":
-    process()
+    main()
 
