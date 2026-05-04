@@ -230,11 +230,42 @@ def get_current_price(soup, ft):
 def get_iphone_discount(soup, ft, cur):
     """
     iPhone ke liye STRICT discount extraction.
-    Pehle confirm karo ki actual product discount hai ya nahi.
-    Bank offer = product discount NAHI hai.
+
+    IMAGE 1 (discount wala):
+      ↓74%   4,̶9̶9̶9̶   ₹1,299
+      Green arrow + % + strikethrough + current price
+
+    IMAGE 2 (no discount):
+      ₹79,900
+      +₹220 Protect Promise Fee   ← LAST LINE — iske baad kuch nahi dekhna
+
+    RULE:
+      - "Protect Promise Fee" line tak hi dekhna hai
+      - Uske baad jo bhi % aaye — IGNORE
+      - Strikethrough price bhi usi boundary ke andar hona chahiye
+      - Bank offers IGNORE
     """
 
-    # ── BANK keywords — ye milein toh woh % bank offer hai ───────────────────
+    # ── BOUNDARY: "Protect Promise Fee" ke baad sab cut karo ─────────────────
+    # Image 2 mein yahi last relevant line hai
+    # Iske baad variant prices, bank offers, EMI sab aata hai — sab ignore
+    BOUNDARY_PHRASES = [
+        "protect promise fee",
+        "protect promise",
+        "add to cart",
+        "buy now",
+    ]
+    ft_upper = ft
+    for phrase in BOUNDARY_PHRASES:
+        idx = ft.lower().find(phrase)
+        if idx != -1:
+            ft_upper = ft[:idx]
+            log.info(f"   [iPHONE-BOUNDARY] Cut at '{phrase}' pos={idx}")
+            break
+
+    log.info(f"   [iPHONE-ZONE] Searching in first {len(ft_upper)} chars of page")
+
+    # ── BANK keywords ─────────────────────────────────────────────────────────
     BANK_KW = [
         "bank", "credit", "debit", "hdfc", "sbi", "axis", "icici",
         "cashback", "upi", "emi", "kotak", "rbl", "paytm", "rupay",
@@ -248,51 +279,72 @@ def get_iphone_discount(soup, ft, cur):
         t = text.lower()
         return any(kw in t for kw in BANK_KW)
 
-    # ── Step 1: Strikethrough price page pe hai? ──────────────────────────────
-    # Agar strikethrough nahi → no product discount → return ""
+    cur_int = int(cur) if cur and cur.isdigit() else 0
+
+    # ── Step 1: Strikethrough price BOUNDARY ke andar dhundho ────────────────
+    # Agar strikethrough nahi mili → no product discount → return "", ""
+    # Image 2: koi strikethrough nahi → ""
+    # Image 1: 4,999 strikethrough → orig confirmed
+
     strikethrough_found = False
     strikethrough_val   = ""
 
-    cur_int = int(cur) if cur and cur.isdigit() else 0
-
+    # Boundary wala soup banana — sirf relevant DOM nodes dekhna
+    # Hum ft_upper (cut text) mein number dhundhte hain aur DOM se verify karte hain
     for tag in soup.find_all(["s", "del", "strike"]):
         v = to_num(safe(tag))
-        if v and v.isdigit() and valid_price(v):
-            if cur_int == 0 or int(v) > cur_int:
-                strikethrough_found = True
-                strikethrough_val   = v
-                log.info(f"   [iPHONE-STRIKE] found strikethrough={v}")
-                break
-
-    for tag in soup.find_all(True):
-        if "line-through" in tag.get("style", ""):
-            v = to_num(safe(tag))
-            if v and v.isdigit() and valid_price(v):
-                if cur_int == 0 or int(v) > cur_int:
-                    strikethrough_found = True
-                    strikethrough_val   = v
-                    log.info(f"   [iPHONE-LINETHRU] found strikethrough={v}")
-                    break
-
-    # Flipkart MRP CSS classes
-    for sel in ["div.yRaY8j.ZYYwLA", "div.yRaY8j", "div._3I9_wc"]:
-        tag = soup.select_one(sel)
-        if tag:
-            v = to_num(safe(tag))
-            if v and v.isdigit() and valid_price(v):
-                if cur_int == 0 or int(v) > cur_int:
-                    strikethrough_found = True
-                    strikethrough_val   = v
-                    log.info(f"   [iPHONE-MRP-CSS] found strikethrough={v}")
-                    break
+        if not v or not v.isdigit() or not valid_price(v):
+            continue
+        if cur_int > 0 and int(v) <= cur_int:
+            continue
+        # Check: kya yeh tag boundary ke andar hai?
+        tag_text = safe(tag)
+        if tag_text and tag_text in ft_upper:
+            strikethrough_found = True
+            strikethrough_val   = v
+            log.info(f"   [iPHONE-STRIKE-IN-ZONE] {v}")
+            break
+        # Fallback: ft_upper mein number exist karta hai?
+        if v in ft_upper.replace(",", ""):
+            strikethrough_found = True
+            strikethrough_val   = v
+            log.info(f"   [iPHONE-STRIKE-NUM-FOUND] {v}")
+            break
 
     if not strikethrough_found:
-        log.info("   [iPHONE-DISC] No strikethrough price → no product discount → ''")
+        for tag in soup.find_all(True):
+            if "line-through" in tag.get("style", ""):
+                v = to_num(safe(tag))
+                if v and v.isdigit() and valid_price(v):
+                    if cur_int == 0 or int(v) > cur_int:
+                        if v in ft_upper.replace(",", "") or safe(tag) in ft_upper:
+                            strikethrough_found = True
+                            strikethrough_val   = v
+                            log.info(f"   [iPHONE-LINETHRU-IN-ZONE] {v}")
+                            break
+
+    if not strikethrough_found:
+        for sel in ["div.yRaY8j.ZYYwLA", "div.yRaY8j", "div._3I9_wc"]:
+            tag = soup.select_one(sel)
+            if tag:
+                v = to_num(safe(tag))
+                if v and v.isdigit() and valid_price(v):
+                    if cur_int == 0 or int(v) > cur_int:
+                        if v in ft_upper.replace(",", ""):
+                            strikethrough_found = True
+                            strikethrough_val   = v
+                            log.info(f"   [iPHONE-MRP-CSS-IN-ZONE] {v}")
+                            break
+
+    if not strikethrough_found:
+        log.info("   [iPHONE-DISC] No strikethrough in zone → no discount → ''")
         return "", ""
 
-    # ── Step 2: Strikethrough mila → ab % dhundho ────────────────────────────
-    # Sirf price container ke paas wala % lo — bank offer wala nahi
+    # ── Step 2: Strikethrough mila → % dhundho BOUNDARY ke andar ────────────
+    # Sirf ft_upper (boundary se pehle) mein % dhundho
+    # Bank filter lagao
 
+    # Short tag scan — boundary ke andar wale tags
     PRICE_SELS = [
         "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
         "div._30jeq3._16Jk6d", "div._30jeq3",
@@ -319,8 +371,10 @@ def get_iphone_discount(soup, ft, cur):
                 if m:
                     val = int(m.group(1))
                     if 1 <= val <= 99:
-                        log.info(f"   [iPHONE-DISC-STRUCT] {val}%")
-                        return f"{val}%", strikethrough_val
+                        # Confirm: yeh % boundary ke andar hai?
+                        if t in ft_upper:
+                            log.info(f"   [iPHONE-DISC-STRUCT-ZONE] {val}%")
+                            return f"{val}%", strikethrough_val
             node = node.parent
 
     # CSS badge classes
@@ -331,15 +385,25 @@ def get_iphone_discount(soup, ft, cur):
             continue
         if not tag:
             continue
-        t = tag.get_text(strip=True)
-        m = re.search(r"(\d{1,2})\s*%", t)
-        if m:
+        t   = tag.get_text(strip=True)
+        m   = re.search(r"(\d{1,2})\s*%", t)
+        if m and t in ft_upper:
             val = int(m.group(1))
             if 1 <= val <= 99:
-                log.info(f"   [iPHONE-DISC-CSS] {val}%")
+                log.info(f"   [iPHONE-DISC-CSS-ZONE] {val}%")
                 return f"{val}%", strikethrough_val
 
-    # ── Step 3: % nahi mila lekin strikethrough hai → calc se disc nikalo ─────
+    # ft_upper mein directly search — bank filter ke saath
+    for m in re.finditer(r"(\d{1,2})\s*%", ft_upper):
+        val = int(m.group(1))
+        if not (1 <= val <= 99):
+            continue
+        ctx = ft_upper[max(0, m.start() - 120): m.end() + 60]
+        if not has_bank(ctx):
+            log.info(f"   [iPHONE-DISC-ZONE-TEXT] {val}%")
+            return f"{val}%", strikethrough_val
+
+    # ── Step 3: % nahi mila lekin strikethrough hai → calc se ────────────────
     if strikethrough_val and cur and cur.isdigit() and strikethrough_val.isdigit():
         orig_int = int(strikethrough_val)
         cur_int2 = int(cur)
@@ -349,7 +413,7 @@ def get_iphone_discount(soup, ft, cur):
                 log.info(f"   [iPHONE-DISC-CALC] {d}% (from cur+strikethrough)")
                 return f"{d}%", strikethrough_val
 
-    log.info("   [iPHONE-DISC] Strikethrough found but % not confirmed → ''")
+    log.info("   [iPHONE-DISC] Strikethrough found but % not in zone → ''")
     return "", strikethrough_val
 
 
