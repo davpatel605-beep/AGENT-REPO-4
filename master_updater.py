@@ -231,120 +231,85 @@ def get_iphone_discount(soup, ft, cur):
     """
     iPhone ke liye STRICT discount extraction.
 
-    IMAGE 1 (discount wala):
-      ↓74%   4,̶9̶9̶9̶   ₹1,299
-      Green arrow + % + strikethrough + current price
+    PATTERN 1 — Discount wala iPhone:
+      4.6 ★ | 1,92,306
+      ↓ 8%   ₹74,̶9̶0̶0̶   ₹68,900
+      (green) (strikethrough <s> tag)  (bold current)
 
-    IMAGE 2 (no discount):
-      ₹79,900
-      +₹220 Protect Promise Fee   ← LAST LINE — iske baad kuch nahi dekhna
+    PATTERN 2 — No discount iPhone:
+      4.6 ★ | 1,92,306
+      ₹69,900                  ← seedha rupee symbol, koi strikethrough nahi
+      +₹220 Protect Promise Fee
 
-    RULE:
-      - "Protect Promise Fee" line tak hi dekhna hai
-      - Uske baad jo bhi % aaye — IGNORE
-      - Strikethrough price bhi usi boundary ke andar hona chahiye
-      - Bank offers IGNORE
+    KEY INSIGHT from logs:
+      - CSS line-through → IGNORE completely for iPhone
+        (Flipkart variant buttons use CSS line-through for out-of-stock variants)
+        e.g. 512 GB "Out of stock" variant → CSS line-through on ₹1,86,999 → WRONG
+      - Only <s> and <del> HTML tags = actual MRP strikethrough
+      - Boundary: cut text at "Protect Promise Fee" — variants/offers ke baad hai
+
+    RULES:
+      1. Cut ft at "Protect Promise Fee" boundary
+      2. In cut zone: look for <s> or <del> tag ONLY (no CSS line-through)
+      3. <s>/<del> nahi mila → disc="" orig="" — khatam
+      4. Mila → uske paas % dhundho (bank filter ke saath)
+      5. % nahi mila → calc karo cur+orig se
     """
 
-    # ── BOUNDARY: "Protect Promise Fee" ke baad sab cut karo ─────────────────
-    # Image 2 mein yahi last relevant line hai
-    # Iske baad variant prices, bank offers, EMI sab aata hai — sab ignore
+    cur_int = int(cur) if cur and cur.isdigit() else 0
+
+    # ── STEP 1: Boundary — "Protect Promise Fee" ke baad IGNORE ─────────────
     BOUNDARY_PHRASES = [
         "protect promise fee",
         "protect promise",
         "add to cart",
         "buy now",
     ]
-    ft_upper = ft
+    ft_zone = ft
     for phrase in BOUNDARY_PHRASES:
         idx = ft.lower().find(phrase)
         if idx != -1:
-            ft_upper = ft[:idx]
+            ft_zone = ft[:idx]
             log.info(f"   [iPHONE-BOUNDARY] Cut at '{phrase}' pos={idx}")
             break
+    log.info(f"   [iPHONE-ZONE] {len(ft_zone)} chars")
 
-    log.info(f"   [iPHONE-ZONE] Searching in first {len(ft_upper)} chars of page")
+    # ── STEP 2: <s> aur <del> ONLY — CSS line-through bilkul nahi ────────────
+    # Reason: Flipkart variant buttons (512GB out-of-stock) CSS line-through
+    # use karte hain — yeh MRP nahi hai, variant price hai → galat strikethrough
+    # Sirf <s> aur <del> = actual HTML strikethrough = actual MRP
+    strikethrough_val = ""
 
-    # ── BANK keywords ─────────────────────────────────────────────────────────
-    BANK_KW = [
-        "bank", "credit", "debit", "hdfc", "sbi", "axis", "icici",
-        "cashback", "upi", "emi", "kotak", "rbl", "paytm", "rupay",
-        "no cost", "instant", "additional", "card", "off on",
-        "on hdfc", "on sbi", "on axis", "on icici", "on kotak",
-        "on rbl", "on paytm", "on rupay", "flat ₹", "flat rs",
-        "offer", "coupon", "voucher", "wallet",
-    ]
-
-    def has_bank(text):
-        t = text.lower()
-        return any(kw in t for kw in BANK_KW)
-
-    cur_int = int(cur) if cur and cur.isdigit() else 0
-
-    # ── Step 1: Strikethrough price BOUNDARY ke andar dhundho ────────────────
-    # Agar strikethrough nahi mili → no product discount → return "", ""
-    # Image 2: koi strikethrough nahi → ""
-    # Image 1: 4,999 strikethrough → orig confirmed
-
-    strikethrough_found = False
-    strikethrough_val   = ""
-
-    # Boundary wala soup banana — sirf relevant DOM nodes dekhna
-    # Hum ft_upper (cut text) mein number dhundhte hain aur DOM se verify karte hain
     for tag in soup.find_all(["s", "del", "strike"]):
         v = to_num(safe(tag))
         if not v or not v.isdigit() or not valid_price(v):
             continue
         if cur_int > 0 and int(v) <= cur_int:
             continue
-        # Check: kya yeh tag boundary ke andar hai?
+        # Ye tag zone ke andar hai? (tag ka text ft_zone mein hona chahiye)
         tag_text = safe(tag)
-        if tag_text and tag_text in ft_upper:
-            strikethrough_found = True
-            strikethrough_val   = v
-            log.info(f"   [iPHONE-STRIKE-IN-ZONE] {v}")
-            break
-        # Fallback: ft_upper mein number exist karta hai?
-        if v in ft_upper.replace(",", ""):
-            strikethrough_found = True
-            strikethrough_val   = v
-            log.info(f"   [iPHONE-STRIKE-NUM-FOUND] {v}")
+        if tag_text and (tag_text in ft_zone or to_num(tag_text) in ft_zone):
+            strikethrough_val = v
+            log.info(f"   [iPHONE-S-TAG-IN-ZONE] {v}")
             break
 
-    if not strikethrough_found:
-        for tag in soup.find_all(True):
-            if "line-through" in tag.get("style", ""):
-                v = to_num(safe(tag))
-                if v and v.isdigit() and valid_price(v):
-                    if cur_int == 0 or int(v) > cur_int:
-                        if v in ft_upper.replace(",", "") or safe(tag) in ft_upper:
-                            strikethrough_found = True
-                            strikethrough_val   = v
-                            log.info(f"   [iPHONE-LINETHRU-IN-ZONE] {v}")
-                            break
-
-    if not strikethrough_found:
-        for sel in ["div.yRaY8j.ZYYwLA", "div.yRaY8j", "div._3I9_wc"]:
-            tag = soup.select_one(sel)
-            if tag:
-                v = to_num(safe(tag))
-                if v and v.isdigit() and valid_price(v):
-                    if cur_int == 0 or int(v) > cur_int:
-                        if v in ft_upper.replace(",", ""):
-                            strikethrough_found = True
-                            strikethrough_val   = v
-                            log.info(f"   [iPHONE-MRP-CSS-IN-ZONE] {v}")
-                            break
-
-    if not strikethrough_found:
-        log.info("   [iPHONE-DISC] No strikethrough in zone → no discount → ''")
+    if not strikethrough_val:
+        log.info("   [iPHONE-DISC] No <s>/<del> strikethrough in zone → disc='' orig=''")
         return "", ""
 
-    # ── Step 2: Strikethrough mila → % dhundho BOUNDARY ke andar ────────────
-    # Sirf ft_upper (boundary se pehle) mein % dhundho
-    # Bank filter lagao
+    # ── STEP 3: % dhundho — price container ke andar, bank filter ke saath ───
+    BANK_KW = [
+        "bank", "credit", "debit", "hdfc", "sbi", "axis", "icici",
+        "cashback", "upi", "emi", "kotak", "rbl", "paytm", "rupay",
+        "no cost", "instant", "additional", "card", "off on",
+        "on hdfc", "on sbi", "on axis", "on icici", "on kotak",
+        "offer", "coupon", "voucher", "wallet",
+    ]
 
-    # Short tag scan — boundary ke andar wale tags
+    def has_bank(text):
+        return any(kw in text.lower() for kw in BANK_KW)
+
+    # Price container structural search
     PRICE_SELS = [
         "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
         "div._30jeq3._16Jk6d", "div._30jeq3",
@@ -370,11 +335,9 @@ def get_iphone_discount(soup, ft, cur):
                 m = re.fullmatch(r"(\d{1,2})\s*%\s*(?:off)?", t, re.I)
                 if m:
                     val = int(m.group(1))
-                    if 1 <= val <= 99:
-                        # Confirm: yeh % boundary ke andar hai?
-                        if t in ft_upper:
-                            log.info(f"   [iPHONE-DISC-STRUCT-ZONE] {val}%")
-                            return f"{val}%", strikethrough_val
+                    if 1 <= val <= 99 and t in ft_zone:
+                        log.info(f"   [iPHONE-DISC-STRUCT] {val}%")
+                        return f"{val}%", strikethrough_val
             node = node.parent
 
     # CSS badge classes
@@ -385,35 +348,35 @@ def get_iphone_discount(soup, ft, cur):
             continue
         if not tag:
             continue
-        t   = tag.get_text(strip=True)
-        m   = re.search(r"(\d{1,2})\s*%", t)
-        if m and t in ft_upper:
+        t = tag.get_text(strip=True)
+        m = re.search(r"(\d{1,2})\s*%", t)
+        if m and t in ft_zone:
             val = int(m.group(1))
             if 1 <= val <= 99:
-                log.info(f"   [iPHONE-DISC-CSS-ZONE] {val}%")
+                log.info(f"   [iPHONE-DISC-CSS] {val}%")
                 return f"{val}%", strikethrough_val
 
-    # ft_upper mein directly search — bank filter ke saath
-    for m in re.finditer(r"(\d{1,2})\s*%", ft_upper):
+    # ft_zone mein % search — bank filter ke saath
+    for m in re.finditer(r"(\d{1,2})\s*%", ft_zone):
         val = int(m.group(1))
         if not (1 <= val <= 99):
             continue
-        ctx = ft_upper[max(0, m.start() - 120): m.end() + 60]
+        ctx = ft_zone[max(0, m.start() - 120): m.end() + 60]
         if not has_bank(ctx):
             log.info(f"   [iPHONE-DISC-ZONE-TEXT] {val}%")
             return f"{val}%", strikethrough_val
 
-    # ── Step 3: % nahi mila lekin strikethrough hai → calc se ────────────────
+    # ── STEP 4: % nahi mila lekin <s> tag mila → calc karo ──────────────────
     if strikethrough_val and cur and cur.isdigit() and strikethrough_val.isdigit():
         orig_int = int(strikethrough_val)
         cur_int2 = int(cur)
         if orig_int > cur_int2:
             d = round((orig_int - cur_int2) / orig_int * 100)
             if 1 <= d <= 99:
-                log.info(f"   [iPHONE-DISC-CALC] {d}% (from cur+strikethrough)")
+                log.info(f"   [iPHONE-DISC-CALC] {d}% (from cur+s-tag)")
                 return f"{d}%", strikethrough_val
 
-    log.info("   [iPHONE-DISC] Strikethrough found but % not in zone → ''")
+    log.info("   [iPHONE-DISC] <s> tag found but % not confirmed → orig only, disc=''")
     return "", strikethrough_val
 
 
