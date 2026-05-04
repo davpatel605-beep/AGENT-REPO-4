@@ -62,7 +62,7 @@ MAX_REVIEWS     = 500000
 TABLES = [
     {
         "name": "induction",
-        "link": "Product Link",
+        "link": "ProductLink",
         "swap": True,
         "cols": {
             "current_price":  "Discounted Price",
