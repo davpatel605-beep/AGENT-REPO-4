@@ -533,11 +533,13 @@ def process_table(client, cfg):
     log.info(f"  TABLE: {name.upper()}  [SWAPPED={swap}]")
     log.info(f"{'=' * 70}")
 
-    rows = [
-        r for r in client.table(name).select("*").execute().data
-        if r.get(link_col, "").strip()
-    ]
-    log.info(f"  {len(rows)} products.")
+    all_rows = client.table(name).select("*").execute().data
+    log.info(f"  Total rows from DB: {len(all_rows)}")
+    if all_rows:
+        log.info(f"  Column names: {list(all_rows[0].keys())}")
+        log.info(f"  Looking for link_col={link_col!r}")
+    rows = [r for r in all_rows if r.get(link_col, "").strip()]
+    log.info(f"  {len(rows)} products with valid link.")
 
     done = fail = 0
     for idx, row in enumerate(rows, 1):
