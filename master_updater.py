@@ -157,6 +157,42 @@ TABLES = [
         },
     },
     {
+        "name": "gaming cpu",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Current Price",
+            "original_price": "Original Price",
+            "discount":       "Discount",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
+        "name": "gaming pc",
+        "link": "Product Link",
+        "swap": False,
+        "cols": {
+            "current_price":  "Price",
+            "original_price": "Original Price-2",
+            "discount":       "Discount-2",
+            "rating":         "Product Rating",
+            "reviews":        "product review",
+        },
+    },
+    {
+        "name": "induction",
+        "link": "Product Link",
+        "swap": True,
+        "cols": {
+            "current_price":  "Discounted Price",
+            "original_price": "Price",
+            "discount":       "Discount Percentage",
+            "rating":         "Rating",
+            "reviews":        "Number of Reviews",
+        },
+    },
+    {
         "name": "iphone",
         "link": "Product URL",
         "swap": True,
