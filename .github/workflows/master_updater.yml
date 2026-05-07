@@ -2,8 +2,6 @@ name: Master Flipkart Updater
 
 # ══════════════════════════════════════════════════════
 # SCHEDULE: Every 3 days at 7:00 AM IST (1:30 AM UTC)
-# Cron format: minute hour day-of-month month day-of-week
-# "*/3" = every 3 days
 # ══════════════════════════════════════════════════════
 on:
   schedule:
@@ -31,16 +29,9 @@ jobs:
 
       - name: Run master updater
         env:
-          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
-          SCRAPERAPI_KEY:    ${{ secrets.SCRAPERAPI_KEY }}
-          SCRAPERAPI_KEY_2:  ${{ secrets.SCRAPERAPI_KEY_2 }}
-          SCRAPERAPI_KEY_3:  ${{ secrets.SCRAPERAPI_KEY_3 }}
-          SCRAPERAPI_KEY_4:  ${{ secrets.SCRAPERAPI_KEY_4 }}
-          SCRAPERAPI_KEY_5:  ${{ secrets.SCRAPERAPI_KEY_5 }}
-          SCRAPERAPI_KEY_6:  ${{ secrets.SCRAPERAPI_KEY_6 }}
-          SCRAPERAPI_KEY_7:  ${{ secrets.SCRAPERAPI_KEY_7 }}
-          SCRAPERAPI_KEY_8:  ${{ secrets.SCRAPERAPI_KEY_8 }}
+          SUPABASE_URL:    ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:    ${{ secrets.SUPABASE_KEY }}
+          SCRAPEDO_TOKEN:  ${{ secrets.SCRAPEDO_TOKEN }}
         run: |
           python master_updater.py
 
