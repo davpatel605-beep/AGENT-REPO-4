@@ -7,6 +7,11 @@ Tables: earbuds → gaming cpu → gaming pc → induction → iphone → keybor
 Schedule: Every 3 days at 7:00 AM IST (1:30 AM UTC)
 GitHub Actions cron: "30 1 */3 * *"
 
+API: scrape.do
+  Secret name: SCRAPEDO_TOKEN
+  CHEAP  (no JS): http://api.scrape.do/?token=TOKEN&url=URL
+  RENDER (JS on): http://api.scrape.do/?token=TOKEN&url=URL&render=true
+
 ══════════════════════════════════════════════════════════════════════════════
 VISUAL PATTERN ON FLIPKART PAGE (exact screenshot layout):
 ══════════════════════════════════════════════════════════════════════════════
@@ -119,7 +124,7 @@ ORIGINAL PRICE MASTERY — ALGORITHM:
 """
 
 import os, re, time, logging, requests
-from urllib.parse import urlencode
+import urllib.parse
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
@@ -131,33 +136,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Env vars ──────────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
-SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
+SUPABASE_URL    = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY    = os.environ["SUPABASE_KEY"].strip()
+SCRAPEDO_TOKEN  = os.environ["SCRAPEDO_TOKEN"].strip()
 
-SCRAPERAPI_KEYS = []
-for _i in ["", "_2", "_3", "_4", "_5", "_6", "_7", "_8"]:
-    _k = os.environ.get(f"SCRAPERAPI_KEY{_i}", "").strip()
-    if _k:
-        SCRAPERAPI_KEYS.append(_k)
-
-_key_idx = 0
-
-
-def get_key():
-    return SCRAPERAPI_KEYS[_key_idx] if SCRAPERAPI_KEYS else ""
-
-
-def rotate_key():
-    global _key_idx
-    if _key_idx < len(SCRAPERAPI_KEYS) - 1:
-        _key_idx += 1
-        log.warning(f"   [KEY] Rotated to key #{_key_idx + 1}")
-        return True
-    log.error("   [KEY] All keys exhausted!")
-    return False
-
-
-ENDPOINT        = "https://api.scraperapi.com/"
+ENDPOINT        = "http://api.scrape.do/"
 REQUEST_TIMEOUT = 90
 DELAY           = 1
 MAX_REVIEWS     = 500000
@@ -314,24 +297,25 @@ TABLES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FETCH
+# FETCH  — scrape.do API
 # ══════════════════════════════════════════════════════════════════════════════
 def fetch(url: str, render: bool = False):
-    key = get_key()
-    if not key:
-        return None
-    params = {"api_key": key, "url": url, "country_code": "in"}
+    """
+    scrape.do API format:
+      CHEAP:  http://api.scrape.do/?token=TOKEN&url=ENCODED_URL
+      RENDER: http://api.scrape.do/?token=TOKEN&url=ENCODED_URL&render=true
+
+    url param must be URL-encoded.
+    """
+    mode           = "RENDER" if render else "CHEAP"
+    encoded_url    = urllib.parse.quote(url, safe="")
+    api_url        = f"{ENDPOINT}?token={SCRAPEDO_TOKEN}&url={encoded_url}"
     if render:
-        params["premium"] = "true"
-        params["render"]  = "true"
-    mode = "RENDER" if render else "CHEAP"
+        api_url += "&render=true"
     try:
-        resp = requests.get(
-            f"{ENDPOINT}?{urlencode(params)}", timeout=REQUEST_TIMEOUT
-        )
+        resp = requests.get(api_url, timeout=REQUEST_TIMEOUT)
         if resp.status_code in (401, 403):
-            if rotate_key():
-                return fetch(url, render)
+            log.error(f"   [{mode}] Auth error {resp.status_code} — check SCRAPEDO_TOKEN")
             return None
         resp.raise_for_status()
         log.info(f"   [{mode}] HTTP {resp.status_code}")
@@ -539,25 +523,10 @@ def get_discount(soup, ft):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # iPHONE DISCOUNT — STRICT SEPARATE VERSION
-#
-# KEY INSIGHT:
-#   Flipkart variant buttons (e.g. 512GB "Out of stock") use CSS line-through
-#   on their price → e.g. ₹1,86,999 with CSS line-through → WRONG strikethrough
-#   Solution: For iPhone ONLY accept <s> and <del> HTML tags
-#             CSS line-through = COMPLETELY IGNORED
-#
-# BOUNDARY:
-#   Cut page at "Protect Promise Fee" — after this = variants/bank offers
-#   Both strikethrough AND % must be found BEFORE this boundary
-#
-# PATTERN:
-#   Discount:    ↓8%  ₹74,̶9̶0̶0̶  ₹68,900  → disc=8% orig=74900 cur=68900
-#   No discount: ₹69,900  → disc="" orig="" cur=69900
 # ══════════════════════════════════════════════════════════════════════════════
 def get_iphone_discount(soup, ft, cur):
     cur_int = int(cur) if cur and cur.isdigit() else 0
 
-    # ── STEP 1: Boundary — "Protect Promise Fee" ke baad IGNORE ─────────────
     BOUNDARY_PHRASES = [
         "protect promise fee",
         "protect promise",
@@ -573,9 +542,6 @@ def get_iphone_discount(soup, ft, cur):
             break
     log.info(f"   [iPHONE-ZONE] {len(ft_zone)} chars")
 
-    # ── STEP 2: <s> aur <del> ONLY — CSS line-through bilkul nahi ────────────
-    # Reason: Flipkart variant buttons CSS line-through = NOT MRP
-    # Only <s> and <del> = actual HTML strikethrough = actual MRP
     strikethrough_val = ""
 
     for tag in soup.find_all(["s", "del", "strike"]):
@@ -594,7 +560,6 @@ def get_iphone_discount(soup, ft, cur):
         log.info("   [iPHONE-DISC] No <s>/<del> in zone → disc='' orig=''")
         return "", ""
 
-    # ── STEP 3: % dhundho — price container ke andar, bank filter ────────────
     BANK_KW = [
         "bank", "credit", "debit", "hdfc", "sbi", "axis", "icici",
         "cashback", "upi", "emi", "kotak", "rbl", "paytm", "rupay",
@@ -636,7 +601,6 @@ def get_iphone_discount(soup, ft, cur):
                         return f"{val}%", strikethrough_val
             node = node.parent
 
-    # CSS badge classes
     for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zedr", "div.UkUFwK", "span.UkUFwK"]:
         try:
             tag = soup.select_one(sel)
@@ -652,7 +616,6 @@ def get_iphone_discount(soup, ft, cur):
                 log.info(f"   [iPHONE-DISC-CSS] {val}%")
                 return f"{val}%", strikethrough_val
 
-    # ft_zone mein % search — bank filter ke saath
     for m in re.finditer(r"(\d{1,2})\s*%", ft_zone):
         val = int(m.group(1))
         if not (1 <= val <= 99):
@@ -662,7 +625,6 @@ def get_iphone_discount(soup, ft, cur):
             log.info(f"   [iPHONE-DISC-ZONE-TEXT] {val}%")
             return f"{val}%", strikethrough_val
 
-    # ── STEP 4: % nahi mila lekin <s> tag mila → calc karo ──────────────────
     if strikethrough_val and cur and cur.isdigit() and strikethrough_val.isdigit():
         orig_int = int(strikethrough_val)
         cur_int2 = int(cur)
@@ -689,35 +651,30 @@ def get_original_price(soup, ft, cur, disc):
     cur_int  = int(cur)
     disc_int = int(d)
 
-    # Step 1: Calculate exact MRP
     calc = round(cur_int / (1 - disc_int / 100))
     log.info(f"   [ORIG-CALC] cur={cur} disc={disc}% → calc={calc}")
 
     min_v = cur_int + 1
     found = set()
 
-    # A. <s> tag
     for tag in soup.find_all("s"):
         v = to_num(safe(tag))
         if v and v.isdigit() and int(v) >= min_v and valid_price(v):
             found.add(int(v))
             log.info(f"   [ORIG-S-TAG] {v}")
 
-    # B. <del> tag
     for tag in soup.find_all("del"):
         v = to_num(safe(tag))
         if v and v.isdigit() and int(v) >= min_v and valid_price(v):
             found.add(int(v))
             log.info(f"   [ORIG-DEL-TAG] {v}")
 
-    # C. <strike> tag
     for tag in soup.find_all("strike"):
         v = to_num(safe(tag))
         if v and v.isdigit() and int(v) >= min_v and valid_price(v):
             found.add(int(v))
             log.info(f"   [ORIG-STRIKE-TAG] {v}")
 
-    # D. CSS inline style: text-decoration:line-through
     for tag in soup.find_all(True):
         style = tag.get("style", "")
         if "line-through" in style:
@@ -726,7 +683,6 @@ def get_original_price(soup, ft, cur, disc):
                 found.add(int(v))
                 log.info(f"   [ORIG-LINETHRU-CSS] {v}")
 
-    # E. Flipkart MRP CSS classes
     MRP_SELS = [
         "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
         "div.v1zwn21m._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
@@ -990,7 +946,7 @@ def process_table(client, cfg):
 
         cur = orig = disc = rating = reviews = ""
 
-        # Pass 1: CHEAP (1 credit)
+        # Pass 1: CHEAP (no JS)
         soup1 = fetch(url, render=False)
         if soup1:
             ft1    = soup1.get_text(" ", strip=True)
@@ -1015,7 +971,7 @@ def process_table(client, cfg):
 
         time.sleep(1)
 
-        # Pass 2: RENDER — if anything missing
+        # Pass 2: RENDER (JS on) — if anything missing
         needs_render = (not disc and not is_iphone) or not reviews or not rating
         if is_iphone:
             needs_render = not cur or not reviews or not rating
@@ -1091,7 +1047,7 @@ def main():
     log.info("=" * 70)
     log.info(
         f"  MASTER FLIPKART UPDATER — {len(TABLES)} tables | "
-        f"Keys: {len(SCRAPERAPI_KEYS)}"
+        f"scrape.do API"
     )
     log.info("  NON-CANCEL POLICY — runs until all tables complete")
     log.info("=" * 70)
@@ -1125,4 +1081,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
