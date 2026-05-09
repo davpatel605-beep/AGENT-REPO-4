@@ -7,10 +7,13 @@ Tables: earbuds → gaming cpu → gaming pc → induction → iphone → keybor
 Schedule: Every 3 days at 7:00 AM IST (1:30 AM UTC)
 GitHub Actions cron: "30 1 */3 * *"
 
-API: scrape.do
-  Secret name: SCRAPEDO_TOKEN
-  CHEAP  (no JS): http://api.scrape.do/?token=TOKEN&url=URL
-  RENDER (JS on): http://api.scrape.do/?token=TOKEN&url=URL&render=true
+API: AlterLab  (https://alterlab.io)
+  Secret name  : ALTERLAB_API_KEY
+  Endpoint     : https://api.alterlab.io/api/v1/scrape
+  Method       : POST
+  Header       : X-API-Key: YOUR_KEY
+  CHEAP        : {"url": "TARGET_URL"}
+  RENDER (JS)  : {"url": "TARGET_URL", "advanced": {"render_js": true}}
 
 ══════════════════════════════════════════════════════════════════════════════
 VISUAL PATTERN ON FLIPKART PAGE (exact screenshot layout):
@@ -124,7 +127,6 @@ ORIGINAL PRICE MASTERY — ALGORITHM:
 """
 
 import os, re, time, logging, requests
-import urllib.parse
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
@@ -136,14 +138,14 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Env vars ──────────────────────────────────────────────────────────────────
-SUPABASE_URL    = os.environ["SUPABASE_URL"].strip()
-SUPABASE_KEY    = os.environ["SUPABASE_KEY"].strip()
-SCRAPEDO_TOKEN  = os.environ["SCRAPEDO_TOKEN"].strip()
+SUPABASE_URL      = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY      = os.environ["SUPABASE_KEY"].strip()
+ALTERLAB_API_KEY  = os.environ["ALTERLAB_API_KEY"].strip()
 
-ENDPOINT        = "http://api.scrape.do/"
-REQUEST_TIMEOUT = 90
-DELAY           = 1
-MAX_REVIEWS     = 500000
+ALTERLAB_ENDPOINT = "https://api.alterlab.io/api/v1/scrape"
+REQUEST_TIMEOUT   = 90
+DELAY             = 1
+MAX_REVIEWS       = 500000
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -297,29 +299,39 @@ TABLES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FETCH  — scrape.do API
+# FETCH  — AlterLab API
 # ══════════════════════════════════════════════════════════════════════════════
 def fetch(url: str, render: bool = False):
     """
-    scrape.do API format:
-      CHEAP:  http://api.scrape.do/?token=TOKEN&url=ENCODED_URL
-      RENDER: http://api.scrape.do/?token=TOKEN&url=ENCODED_URL&render=true
-
-    url param must be URL-encoded.
+    AlterLab API:
+      Endpoint : POST https://api.alterlab.io/api/v1/scrape
+      Header   : X-API-Key: ALTERLAB_API_KEY
+      CHEAP    : body = {"url": "TARGET_URL"}
+      RENDER   : body = {"url": "TARGET_URL", "advanced": {"render_js": true}}
     """
-    mode           = "RENDER" if render else "CHEAP"
-    encoded_url    = urllib.parse.quote(url, safe="")
-    api_url        = f"{ENDPOINT}?token={SCRAPEDO_TOKEN}&url={encoded_url}"
+    mode    = "RENDER" if render else "CHEAP"
+    headers = {"X-API-Key": ALTERLAB_API_KEY}
+    body    = {"url": url}
     if render:
-        api_url += "&render=true"
+        body["advanced"] = {"render_js": True}
     try:
-        resp = requests.get(api_url, timeout=REQUEST_TIMEOUT)
+        resp = requests.post(
+            ALTERLAB_ENDPOINT,
+            headers=headers,
+            json=body,
+            timeout=REQUEST_TIMEOUT,
+        )
         if resp.status_code in (401, 403):
-            log.error(f"   [{mode}] Auth error {resp.status_code} — check SCRAPEDO_TOKEN")
+            log.error(f"   [{mode}] Auth error {resp.status_code} — check ALTERLAB_API_KEY")
             return None
         resp.raise_for_status()
         log.info(f"   [{mode}] HTTP {resp.status_code}")
-        return BeautifulSoup(resp.text, "html.parser")
+        data = resp.json()
+        html = data.get("html") or data.get("content") or ""
+        if not html:
+            log.warning(f"   [{mode}] Empty HTML in response")
+            return None
+        return BeautifulSoup(html, "html.parser")
     except Exception as exc:
         log.error(f"   [{mode}] {exc}")
         return None
@@ -543,7 +555,6 @@ def get_iphone_discount(soup, ft, cur):
     log.info(f"   [iPHONE-ZONE] {len(ft_zone)} chars")
 
     strikethrough_val = ""
-
     for tag in soup.find_all(["s", "del", "strike"]):
         v = to_num(safe(tag))
         if not v or not v.isdigit() or not valid_price(v):
@@ -650,8 +661,7 @@ def get_original_price(soup, ft, cur, disc):
 
     cur_int  = int(cur)
     disc_int = int(d)
-
-    calc = round(cur_int / (1 - disc_int / 100))
+    calc     = round(cur_int / (1 - disc_int / 100))
     log.info(f"   [ORIG-CALC] cur={cur} disc={disc}% → calc={calc}")
 
     min_v = cur_int + 1
@@ -792,9 +802,7 @@ def extract_review_number(soup, ft, rating, discount) -> str:
                     log.info(f"   [M2-PIPE] reviews={v}")
                     return v
         if rating:
-            for pat in [
-                re.escape(rating) + r"\s*[|]\s*([\d,]+)",
-            ]:
+            for pat in [re.escape(rating) + r"\s*[|]\s*([\d,]+)"]:
                 m = re.search(pat, ft)
                 if m:
                     v = validate_review(m.group(1), discount, force)
@@ -1047,7 +1055,7 @@ def main():
     log.info("=" * 70)
     log.info(
         f"  MASTER FLIPKART UPDATER — {len(TABLES)} tables | "
-        f"scrape.do API"
+        f"AlterLab API"
     )
     log.info("  NON-CANCEL POLICY — runs until all tables complete")
     log.info("=" * 70)
@@ -1081,3 +1089,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
