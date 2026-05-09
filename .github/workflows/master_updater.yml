@@ -25,7 +25,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 supabase
+          pip install alterlab beautifulsoup4 supabase
 
       - name: Run master updater
         env:
