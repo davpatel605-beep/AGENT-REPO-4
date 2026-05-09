@@ -142,7 +142,7 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 # ALTERLAB_API_KEY is read automatically by AlterLab SDK from env
 
 # AlterLab SDK client — reads ALTERLAB_API_KEY from environment automatically
-alterlab = AlterLab(timeout=90, max_retries=2, retry_delay=2.0)
+alterlab = AlterLab(api_key=os.environ["ALTERLAB_API_KEY"].strip(), timeout=90, max_retries=2, retry_delay=2.0)
 
 DELAY       = 1
 MAX_REVIEWS = 500000
