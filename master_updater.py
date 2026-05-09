@@ -9,11 +9,9 @@ GitHub Actions cron: "30 1 */3 * *"
 
 API: AlterLab  (https://alterlab.io)
   Secret name  : ALTERLAB_API_KEY
-  Endpoint     : https://api.alterlab.io/api/v1/scrape
-  Method       : POST
-  Header       : X-API-Key: YOUR_KEY
-  CHEAP        : {"url": "TARGET_URL"}
-  RENDER (JS)  : {"url": "TARGET_URL", "advanced": {"render_js": true}}
+  Install      : pip install alterlab
+  CHEAP        : client.scrape_html(url)          → result.html
+  RENDER (JS)  : client.scrape_js(url)            → result.html
 
 ══════════════════════════════════════════════════════════════════════════════
 VISUAL PATTERN ON FLIPKART PAGE (exact screenshot layout):
@@ -126,8 +124,9 @@ ORIGINAL PRICE MASTERY — ALGORITHM:
           No page found     → use calc only
 """
 
-import os, re, time, logging, requests
+import os, re, time, logging
 from bs4 import BeautifulSoup
+from alterlab import AlterLab
 from supabase import create_client, Client
 
 logging.basicConfig(
@@ -138,14 +137,15 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Env vars ──────────────────────────────────────────────────────────────────
-SUPABASE_URL      = os.environ["SUPABASE_URL"].strip()
-SUPABASE_KEY      = os.environ["SUPABASE_KEY"].strip()
-ALTERLAB_API_KEY  = os.environ["ALTERLAB_API_KEY"].strip()
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
+# ALTERLAB_API_KEY is read automatically by AlterLab SDK from env
 
-ALTERLAB_ENDPOINT = "https://api.alterlab.io/api/v1/scrape"
-REQUEST_TIMEOUT   = 90
-DELAY             = 1
-MAX_REVIEWS       = 500000
+# AlterLab SDK client — reads ALTERLAB_API_KEY from environment automatically
+alterlab = AlterLab(timeout=90, max_retries=2, retry_delay=2.0)
+
+DELAY       = 1
+MAX_REVIEWS = 500000
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -299,38 +299,26 @@ TABLES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FETCH  — AlterLab API
+# FETCH  — AlterLab Python SDK
 # ══════════════════════════════════════════════════════════════════════════════
 def fetch(url: str, render: bool = False):
     """
-    AlterLab API:
-      Endpoint : POST https://api.alterlab.io/api/v1/scrape
-      Header   : X-API-Key: ALTERLAB_API_KEY
-      CHEAP    : body = {"url": "TARGET_URL"}
-      RENDER   : body = {"url": "TARGET_URL", "advanced": {"render_js": true}}
+    AlterLab SDK:
+      CHEAP  : alterlab.scrape_html(url)  → result.html  (static HTML, cheapest)
+      RENDER : alterlab.scrape_js(url)    → result.html  (JS rendered, for SPAs)
+    SDK reads ALTERLAB_API_KEY automatically from environment.
     """
-    mode    = "RENDER" if render else "CHEAP"
-    headers = {"X-API-Key": ALTERLAB_API_KEY}
-    body    = {"url": url}
-    if render:
-        body["advanced"] = {"render_js": True}
+    mode = "RENDER" if render else "CHEAP"
     try:
-        resp = requests.post(
-            ALTERLAB_ENDPOINT,
-            headers=headers,
-            json=body,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code in (401, 403):
-            log.error(f"   [{mode}] Auth error {resp.status_code} — check ALTERLAB_API_KEY")
-            return None
-        resp.raise_for_status()
-        log.info(f"   [{mode}] HTTP {resp.status_code}")
-        data = resp.json()
-        html = data.get("html") or data.get("content") or ""
+        if render:
+            result = alterlab.scrape_js(url)
+        else:
+            result = alterlab.scrape_html(url)
+        html = result.html or ""
         if not html:
-            log.warning(f"   [{mode}] Empty HTML in response")
+            log.warning(f"   [{mode}] Empty HTML")
             return None
+        log.info(f"   [{mode}] OK  cost=${result.billing.cost_dollars:.4f}  tier={result.billing.tier_used}")
         return BeautifulSoup(html, "html.parser")
     except Exception as exc:
         log.error(f"   [{mode}] {exc}")
@@ -954,7 +942,7 @@ def process_table(client, cfg):
 
         cur = orig = disc = rating = reviews = ""
 
-        # Pass 1: CHEAP (no JS)
+        # Pass 1: CHEAP (static HTML — cheapest tier)
         soup1 = fetch(url, render=False)
         if soup1:
             ft1    = soup1.get_text(" ", strip=True)
@@ -979,7 +967,7 @@ def process_table(client, cfg):
 
         time.sleep(1)
 
-        # Pass 2: RENDER (JS on) — if anything missing
+        # Pass 2: RENDER (JS on) — only if anything missing
         needs_render = (not disc and not is_iphone) or not reviews or not rating
         if is_iphone:
             needs_render = not cur or not reviews or not rating
@@ -1055,7 +1043,7 @@ def main():
     log.info("=" * 70)
     log.info(
         f"  MASTER FLIPKART UPDATER — {len(TABLES)} tables | "
-        f"AlterLab API"
+        f"AlterLab SDK"
     )
     log.info("  NON-CANCEL POLICY — runs until all tables complete")
     log.info("=" * 70)
