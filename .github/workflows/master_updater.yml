@@ -29,9 +29,9 @@ jobs:
 
       - name: Run master updater
         env:
-          SUPABASE_URL:    ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:    ${{ secrets.SUPABASE_KEY }}
-          SCRAPEDO_TOKEN:  ${{ secrets.SCRAPEDO_TOKEN }}
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          ALTERLAB_API_KEY:  ${{ secrets.ALTERLAB_API_KEY }}
         run: |
           python master_updater.py
 
