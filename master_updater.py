@@ -142,7 +142,7 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 # ALTERLAB_API_KEY is read automatically by AlterLab SDK from env
 
 # AlterLab SDK client — reads ALTERLAB_API_KEY from environment automatically
-alterlab = AlterLab(api_key=os.environ["ALTERLAB_API_KEY"].strip(), timeout=90, max_retries=2, retry_delay=2.0)
+alterlab = AlterLab(timeout=90, max_retries=2, retry_delay=2.0)
 
 DELAY       = 1
 MAX_REVIEWS = 500000
@@ -311,7 +311,7 @@ def fetch(url: str, render: bool = False):
     mode = "RENDER" if render else "CHEAP"
     try:
         if render:
-            result = alterlab.scrape(url, render_js=True)
+            result = alterlab.scrape_js(url)
         else:
             result = alterlab.scrape_html(url)
         html = result.html or ""
@@ -1077,3 +1077,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
