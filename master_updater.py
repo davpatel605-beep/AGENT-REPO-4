@@ -311,7 +311,7 @@ def fetch(url: str, render: bool = False):
     mode = "RENDER" if render else "CHEAP"
     try:
         if render:
-            result = alterlab.scrape_js(url)
+            result = alterlab.scrape(url, render_js=True)
         else:
             result = alterlab.scrape_html(url)
         html = result.html or ""
@@ -1077,4 +1077,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
