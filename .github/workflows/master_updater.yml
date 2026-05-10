@@ -21,10 +21,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        # alterlab = official SDK (handles 202 polling, retries automatically)
-        # supabase = database client
-        # beautifulsoup4 = HTML parser (lxml fallback via html.parser)
-        run: pip install alterlab supabase beautifulsoup4
+        # httpx<0.28 REQUIRED — httpx 0.28+ ne 'proxy' param hataya
+        # gotrue (supabase ka part) abhi bhi purana proxy use karta hai
+        # → version mismatch se "unexpected keyword argument 'proxy'" aata hai
+        run: pip install "httpx<0.28" alterlab supabase beautifulsoup4
 
       - name: Run price updater
         env:
