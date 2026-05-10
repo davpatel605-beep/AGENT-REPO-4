@@ -1,32 +1,36 @@
-name: Master Flipkart Updater
+name: Flipkart Price Updater (AlterLab)
 
 on:
   schedule:
+    # Har 3 din — 7:00 AM IST = 1:30 AM UTC
     - cron: "30 1 */3 * *"
-  workflow_dispatch:
+  workflow_dispatch:   # Manual trigger bhi available
 
 jobs:
   update-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360   # GitHub Free max
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install supabase alterlab beautifulsoup4
+        # alterlab = official SDK (handles 202 polling, retries automatically)
+        # supabase = database client
+        # beautifulsoup4 = HTML parser (lxml fallback via html.parser)
+        run: pip install alterlab supabase beautifulsoup4
 
-      - name: Run master updater
+      - name: Run price updater
         env:
-          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
-          ALTERLAB_API_KEY:  ${{ secrets.ALTERLAB_API_KEY }}
-        run: |
-          python master_updater.py
+          SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:        ${{ secrets.SUPABASE_KEY }}
+          # IMPORTANT: Secret naam ALTERLAB_API_KEY hona chahiye
+          # SDK ise automatically padhta hai — bina kuch likhe
+          ALTERLAB_API_KEY:    ${{ secrets.ALTERLAB_API_KEY }}
+        run: python master_updater.py
