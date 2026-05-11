@@ -26,7 +26,7 @@ supabase: Client = create_client(
 
 # ── AlterLab ───────────────────────────────────────────────────────────────
 ALTERLAB_KEY      = os.environ["ALTERLAB_API_KEY"]
-ALTERLAB_SCRAPE   = "https://api.alterlab.io/v1/scrape"
+ALTERLAB_SCRAPE   = "https://api.alterlab.io/api/v1/scrape"
 ALTERLAB_JOBS     = "https://api.alterlab.io/api/v1/jobs/{job_id}"
 ALTERLAB_HDR      = {"X-API-Key": ALTERLAB_KEY, "Content-Type": "application/json"}
 
