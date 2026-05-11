@@ -27,7 +27,7 @@ supabase: Client = create_client(
 # ── AlterLab ───────────────────────────────────────────────────────────────
 ALTERLAB_KEY      = os.environ["ALTERLAB_API_KEY"]
 ALTERLAB_SCRAPE   = "https://api.alterlab.io/v1/scrape"
-ALTERLAB_JOBS     = "https://api.alterlab.io/v1/jobs/{job_id}"
+ALTERLAB_JOBS     = "https://api.alterlab.io/api/v1/jobs/{job_id}"
 ALTERLAB_HDR      = {"X-API-Key": ALTERLAB_KEY, "Content-Type": "application/json"}
 
 # ── OpenRouter AI Agent ────────────────────────────────────────────────────
@@ -45,46 +45,68 @@ OPENROUTER_HDR   = {
 # ALTERLAB FETCH
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _poll_job(job_id: str, label: str, max_wait: int = 60) -> str | None:
+def _poll_job(job_id: str, label: str, max_wait: int = 120) -> str | None:
     """
-    AlterLab ASYNC — job_id se result poll karo.
-    Har 4 second mein check karo, max 60 sec wait.
+    AlterLab ASYNC polling.
+    Correct endpoint: GET /api/v1/jobs/{job_id}
+    Correct status  : "succeeded" (not "completed")
+    Correct HTML loc: result.content.html
     """
     poll_url = ALTERLAB_JOBS.format(job_id=job_id)
-    waited = 0
+    waited   = 0
+    interval = 4   # exponential backoff
+
     while waited < max_wait:
-        time.sleep(4)
-        waited += 4
+        time.sleep(interval)
+        waited += interval
+        interval = min(interval * 1.5, 15)  # backoff: 4→6→9→13→15→15...
+
         try:
             r = requests.get(poll_url, headers=ALTERLAB_HDR, timeout=30)
-            if r.status_code != 200:
-                logger.warning(f"    [{label}] Poll HTTP {r.status_code}")
+            logger.info(f"    [{label}] Poll HTTP {r.status_code} ({waited}s)")
+
+            if r.status_code == 404:
+                logger.warning(f"    [{label}] Job not found — wait kar raha hoon")
                 continue
-            data = r.json()
-            status = data.get("status","")
-            logger.info(f"    [{label}] Job status: {status} ({waited}s)")
-            if status == "completed":
-                html = (data.get("html") or data.get("content") or
-                        data.get("text") or data.get("body") or
-                        data.get("result",""))
-                if isinstance(html, dict):
-                    html = html.get("html") or html.get("content") or ""
+            if r.status_code != 200:
+                logger.warning(f"    [{label}] Poll error {r.status_code}")
+                continue
+
+            data   = r.json()
+            status = data.get("status", "")
+            logger.info(f"    [{label}] Status: {status}")
+
+            if status == "succeeded":
+                # Correct path: result.content.html
+                result  = data.get("result", {})
+                content = result.get("content", {})
+                html    = (content.get("html") or
+                           content.get("text") or
+                           result.get("html") or
+                           result.get("text") or "")
                 if len(html) > 1000:
-                    logger.info(f"    [{label}] OK — {len(html)} chars")
+                    logger.info(f"    [{label}] ✓ OK — {len(html)} chars")
                     return html
-                logger.warning(f"    [{label}] Completed but HTML chhota: {len(html)} | keys: {list(data.keys())}")
+                logger.warning(f"    [{label}] Succeeded but HTML chhota {len(html)}")
+                logger.warning(f"    [{label}] Result keys: {list(result.keys())}")
                 return None
-            if status in ("failed","error"):
+
+            if status in ("failed", "error"):
                 logger.error(f"    [{label}] Job failed: {data.get('error','')}")
                 return None
+
+            # Still running — keep polling
+            logger.info(f"    [{label}] Still running ({status})...")
+
         except Exception as e:
-            logger.warning(f"    [{label}] Poll error: {e}")
+            logger.warning(f"    [{label}] Poll exception: {e}")
+
     logger.warning(f"    [{label}] Timeout after {max_wait}s")
     return None
 
 
 def _alterlab_call(url: str, render: bool) -> str | None:
-    payload = {"url": url, "render_js": render}
+    payload = {"url": url, "render": render}
     label   = "RENDER" if render else "CHEAP"
     try:
         resp = requests.post(ALTERLAB_SCRAPE, headers=ALTERLAB_HDR, json=payload, timeout=60)
