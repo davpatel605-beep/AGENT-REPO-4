@@ -25,9 +25,10 @@ supabase: Client = create_client(
 )
 
 # ── AlterLab ───────────────────────────────────────────────────────────────
-ALTERLAB_KEY  = os.environ["ALTERLAB_API_KEY"]
-ALTERLAB_URL  = "https://api.alterlab.io/v1/scrape"
-ALTERLAB_HDR  = {"X-API-Key": ALTERLAB_KEY, "Content-Type": "application/json"}
+ALTERLAB_KEY      = os.environ["ALTERLAB_API_KEY"]
+ALTERLAB_SCRAPE   = "https://api.alterlab.io/v1/scrape"
+ALTERLAB_JOBS     = "https://api.alterlab.io/v1/jobs/{job_id}"
+ALTERLAB_HDR      = {"X-API-Key": ALTERLAB_KEY, "Content-Type": "application/json"}
 
 # ── OpenRouter AI Agent ────────────────────────────────────────────────────
 OPENROUTER_KEY   = os.environ["OPENROUTER_API_KEY"]
@@ -44,30 +45,82 @@ OPENROUTER_HDR   = {
 # ALTERLAB FETCH
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _poll_job(job_id: str, label: str, max_wait: int = 60) -> str | None:
+    """
+    AlterLab ASYNC — job_id se result poll karo.
+    Har 4 second mein check karo, max 60 sec wait.
+    """
+    poll_url = ALTERLAB_JOBS.format(job_id=job_id)
+    waited = 0
+    while waited < max_wait:
+        time.sleep(4)
+        waited += 4
+        try:
+            r = requests.get(poll_url, headers=ALTERLAB_HDR, timeout=30)
+            if r.status_code != 200:
+                logger.warning(f"    [{label}] Poll HTTP {r.status_code}")
+                continue
+            data = r.json()
+            status = data.get("status","")
+            logger.info(f"    [{label}] Job status: {status} ({waited}s)")
+            if status == "completed":
+                html = (data.get("html") or data.get("content") or
+                        data.get("text") or data.get("body") or
+                        data.get("result",""))
+                if isinstance(html, dict):
+                    html = html.get("html") or html.get("content") or ""
+                if len(html) > 1000:
+                    logger.info(f"    [{label}] OK — {len(html)} chars")
+                    return html
+                logger.warning(f"    [{label}] Completed but HTML chhota: {len(html)} | keys: {list(data.keys())}")
+                return None
+            if status in ("failed","error"):
+                logger.error(f"    [{label}] Job failed: {data.get('error','')}")
+                return None
+        except Exception as e:
+            logger.warning(f"    [{label}] Poll error: {e}")
+    logger.warning(f"    [{label}] Timeout after {max_wait}s")
+    return None
+
+
 def _alterlab_call(url: str, render: bool) -> str | None:
     payload = {"url": url, "render_js": render}
     label   = "RENDER" if render else "CHEAP"
     try:
-        resp = requests.post(ALTERLAB_URL, headers=ALTERLAB_HDR, json=payload, timeout=90)
-        logger.info(f"    [{label}] HTTP {resp.status_code}")
+        resp = requests.post(ALTERLAB_SCRAPE, headers=ALTERLAB_HDR, json=payload, timeout=60)
+        logger.info(f"    [{label}] Submit HTTP {resp.status_code}")
+
         if resp.status_code == 401:
             logger.error("    401 — ALTERLAB_API_KEY check karo!")
             return None
         if resp.status_code == 402:
             logger.error("    402 — Balance khatam!")
             return None
-        if resp.status_code == 200:
-            raw = resp.text
+
+        if resp.status_code in (200, 202):
             try:
                 data = resp.json()
-                html = (data.get("html") or data.get("content") or
-                        data.get("text") or data.get("body") or "")
             except Exception:
-                html = raw
-            if len(html) > 1000:
-                logger.info(f"    [{label}] OK — {len(html)} chars")
+                data = {}
+
+            # Case 1: Direct HTML response (sync)
+            html = (data.get("html") or data.get("content") or
+                    data.get("text") or data.get("body") or "")
+            if isinstance(html, str) and len(html) > 1000:
+                logger.info(f"    [{label}] Sync OK — {len(html)} chars")
                 return html
-            logger.warning(f"    [{label}] Chhota response: {len(html)} chars | raw: {raw[:150]}")
+
+            # Case 2: Async job — poll karo
+            job_id = data.get("job_id") or data.get("id")
+            if job_id:
+                logger.info(f"    [{label}] Async job: {job_id} — polling...")
+                return _poll_job(job_id, label, max_wait=90)
+
+            logger.warning(f"    [{label}] Unknown response: {str(data)[:200]}")
+
+        else:
+            logger.warning(f"    [{label}] HTTP {resp.status_code}: {resp.text[:150]}")
+
     except Exception as e:
         logger.warning(f"    [{label}] Error: {e}")
     return None
