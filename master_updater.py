@@ -1,29 +1,29 @@
 """
-Flipkart Price Scraper — master_updater.py
-AlterLab SDK (AlterLabSync) + Supabase + GitHub Actions
+Flipkart Price Scraper — AGENT VERSION
+WebScraping.AI API + Supabase + GitHub Actions
 
-VERIFIED against official docs at:
-  https://alterlab.io/docs/sdk/python
-  https://alterlab.io/docs/api/rest
+5-Attempt Strategy:
+  Attempt 1 : Static HTML          (1 credit)
+  Attempt 2 : JS Rendering         (2 credits)
+  Attempt 3 : Residential + JS     (10 credits)
+  Attempt 4 : Residential + JS     (10 credits — retry)
+  Attempt 5 : AI Fields extraction (5 credits — direct structured data)
 
-CORRECT endpoint : https://api.alterlab.io/api/v1/scrape
-CORRECT auth     : X-API-Key header
-CORRECT SDK class: AlterLabSync (synchronous, no await needed)
-CORRECT env var  : ALTERLAB_API_KEY (SDK reads this automatically)
-CORRECT response : result["content"] — string or dict with "html" key
+Docs: https://webscraping.ai/docs
+Auth: api_key as query param
 """
 
 import os
 import re
 import time
+import json
 import logging
+import requests
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
-# AlterLab SDK
-from alterlab import AlterLabSync, AlterLabAPIError, AlterLabTimeoutError
 
-# ── Logging ───────────────────────────────────────────────────────────────
+# ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -31,106 +31,165 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Supabase ──────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ── AlterLab client ───────────────────────────────────────────────────────
-# SDK reads ALTERLAB_API_KEY env var automatically — no need to pass api_key
-# GitHub Secret name MUST be: ALTERLAB_API_KEY
-alterlab = AlterLabSync()
+# ── Supabase ───────────────────────────────────────────────────────────────
+supabase: Client = create_client(
+    os.environ["SUPABASE_URL"],
+    os.environ["SUPABASE_KEY"],
+)
+
+
+# ── WebScraping.AI ─────────────────────────────────────────────────────────
+WS_KEY      = os.environ["WEBSCRAPING_AI_KEY"]
+WS_HTML_URL = "https://api.webscraping.ai/html"
+WS_AI_URL   = "https://api.webscraping.ai/ai/fields"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ALTERLAB FETCH — Using official SDK (handles 202 polling automatically)
+# WEBSCRAPING.AI — HTML FETCH
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _extract_html_from_result(result: dict) -> str:
+def _ws_html(url: str, js: bool, residential: bool = False) -> str | None:
     """
-    AlterLab response 'content' field can be:
-      - A plain string (simple sync HTML request)
-      - A dict with keys: html, text, json, markdown (when formats param used)
+    Single HTML fetch call to WebScraping.AI.
+    js=False + datacenter  → 1 credit
+    js=True  + datacenter  → 2 credits
+    js=True  + residential → 10 credits
     """
-    content = result.get("content", "")
-    if isinstance(content, dict):
-        return content.get("html") or content.get("text") or ""
-    return content or ""
+    label = f"{'RES' if residential else 'DC'}/{'JS' if js else 'STATIC'}"
 
+    params = {
+        "api_key" : WS_KEY,
+        "url"     : url,
+        "js"      : "true" if js else "false",
+        "country" : "in",
+        "timeout" : 15000,
+    }
+    if residential:
+        params["proxy"] = "residential"
 
-def fetch_page(url: str, render: bool = False, retries: int = 3) -> str | None:
-    """
-    Fetch a Flipkart page using AlterLab SDK.
-    - render=False → mode="html"  (Tier 1/2, cheapest, fast)
-    - render=True  → mode="js"   (Tier 4, headless browser, JS rendered)
-    India geo-targeting included for correct pricing/data.
-    """
-    mode = "js" if render else "html"
-    label = "RENDER(js)" if render else "CHEAP(html)"
+    try:
+        resp = requests.get(WS_HTML_URL, params=params, timeout=60)
+        logger.info(f"    [{label}] HTTP {resp.status_code} — {len(resp.text)} chars")
 
-    for attempt in range(1, retries + 1):
-        try:
-            result = alterlab.scrape(
-                url=url,
-                mode=mode,
-                location={"country": "IN"},   # India geo-targeting
-                formats=["html"],              # Always get HTML in content.html
-                timeout=120,
-            )
-
-            html = _extract_html_from_result(result)
-
-            if len(html) > 500:
-                tier = result.get("billing", {}).get("tier_used", "?")
-                credits = result.get("billing", {}).get("total_credits", "?")
-                logger.info(f"    [{label}] OK — tier={tier}, credits={credits}, len={len(html)}")
-                return html
-
-            logger.warning(f"    [{label}] Attempt {attempt}: HTML too small ({len(html)} chars)")
-
-        except AlterLabAPIError as e:
-            code = e.status_code if hasattr(e, "status_code") else "?"
-            if code == 401:
-                logger.error("    AUTH ERROR 401 — Check ALTERLAB_API_KEY secret in GitHub!")
-                return None  # Retry is useless for auth errors
-            if code == 402:
-                logger.error("    BALANCE ERROR 402 — Top up AlterLab account!")
+        if resp.status_code == 200:
+            if len(resp.text) > 1000:
+                logger.info(f"    [{label}] ✓ OK")
+                return resp.text
+            else:
+                logger.warning(f"    [{label}] Response too small: {resp.text[:150]}")
                 return None
-            if code == 429:
-                wait = getattr(e, "retry_after", 15)
-                logger.warning(f"    Rate limited — waiting {wait}s")
-                time.sleep(wait)
-                continue
-            logger.error(f"    [{label}] Attempt {attempt}: AlterLabAPIError {code} — {e}")
 
-        except AlterLabTimeoutError:
-            logger.warning(f"    [{label}] Attempt {attempt}: Timeout")
+        elif resp.status_code == 402:
+            logger.error("    Credits khatam — WebScraping.AI account top up karo!")
+            return None
 
-        except Exception as e:
-            logger.error(f"    [{label}] Attempt {attempt}: Unexpected error — {e}")
+        elif resp.status_code == 403:
+            logger.warning(f"    [{label}] 403 Forbidden")
+            return None
 
-        time.sleep(5)
+        else:
+            logger.warning(f"    [{label}] Unexpected: {resp.text[:150]}")
+            return None
 
+    except requests.exceptions.Timeout:
+        logger.warning(f"    [{label}] Request timeout")
+        return None
+    except Exception as e:
+        logger.error(f"    [{label}] Error: {e}")
+        return None
+
+
+def fetch_html(url: str) -> str | None:
+    """
+    Attempts 1-4: HTML fetch with escalating power.
+    Returns HTML string or None.
+    """
+    # Attempt 1: Static (cheapest)
+    logger.info("  Attempt 1/5 — STATIC (1 credit)")
+    html = _ws_html(url, js=False, residential=False)
+    if html:
+        return html
+    time.sleep(2)
+
+    # Attempt 2: JS Rendering
+    logger.info("  Attempt 2/5 — JS RENDER (2 credits)")
+    html = _ws_html(url, js=True, residential=False)
+    if html:
+        return html
+    time.sleep(3)
+
+    # Attempt 3: Residential + JS
+    logger.info("  Attempt 3/5 — RESIDENTIAL+JS (10 credits)")
+    html = _ws_html(url, js=True, residential=True)
+    if html:
+        return html
+    time.sleep(3)
+
+    # Attempt 4: Residential + JS retry
+    logger.info("  Attempt 4/5 — RESIDENTIAL+JS retry (10 credits)")
+    html = _ws_html(url, js=True, residential=True)
+    if html:
+        return html
+
+    # Attempt 5 handled in scrape_row()
     return None
 
 
-def smart_fetch(url: str) -> str | None:
+# ═══════════════════════════════════════════════════════════════════════════
+# WEBSCRAPING.AI — AI FIELDS (Attempt 5)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def ws_ai_fields(url: str) -> dict:
     """
-    Try CHEAP (html) mode first.
-    If HTML too small or empty → try RENDER (js) mode.
+    Attempt 5 — WebScraping.AI AI extraction.
+    Directly returns structured data — no HTML parsing needed.
+    Cost: 5 credits + proxy cost.
     """
-    html = fetch_page(url, render=False)
-    if html and len(html) > 5000:
-        return html
-    logger.info("    Cheap mode insufficient → switching to RENDER mode")
-    return fetch_page(url, render=True)
+    logger.info("  Attempt 5/5 — AI/fields (5 credits)")
+
+    fields = {
+        "current_price" : "Current selling price in bold (Indian Rupees format e.g. Rs.13,902)",
+        "original_price": "Original MRP with strikethrough (e.g. Rs.19,999). Empty string if no discount.",
+        "discount"      : "Discount percentage in green (e.g. 70%). Empty string if no discount.",
+        "rating"        : "Star rating number only (e.g. 4.1). Empty string if not shown.",
+        "reviews"       : "Number of reviews Indian format (e.g. 34,452). Empty string if not shown.",
+        "ratings_count" : "Number of ratings if shown separately (e.g. 1,01,973). Empty string if not shown.",
+    }
+
+    params = {
+        "api_key" : WS_KEY,
+        "url"     : url,
+        "fields"  : json.dumps(fields),
+        "country" : "in",
+        "js"      : "true",
+    }
+
+    try:
+        resp = requests.get(WS_AI_URL, params=params, timeout=60)
+        logger.info(f"    [AI/fields] HTTP {resp.status_code}")
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict):
+                logger.info(f"    [AI/fields] Data: {data}")
+                return data
+            logger.warning(f"    [AI/fields] Unexpected format: {data}")
+            return {}
+
+        logger.error(f"    [AI/fields] Failed: {resp.text[:200]}")
+        return {}
+
+    except Exception as e:
+        logger.error(f"    [AI/fields] Error: {e}")
+        return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PRICE / FORMAT UTILITIES
+# FORMAT UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════
 
-def parse_int(text: str) -> int | None:
+def parse_int(text) -> int | None:
     if not text:
         return None
     digits = re.sub(r"[^\d]", "", str(text))
@@ -138,8 +197,8 @@ def parse_int(text: str) -> int | None:
 
 
 def indian_price(val: int) -> str:
-    """Format as Rs.X,XX,XXX"""
-    if val is None:
+    """Format integer as Rs.X,XX,XXX"""
+    if not val:
         return ""
     s = str(val)
     if len(s) <= 3:
@@ -183,62 +242,56 @@ _BANK_KW = [
     "flat rs", "flat rupee",
 ]
 
-
 def has_bank_kw(text: str) -> bool:
-    t = text.lower()
-    return any(k in t for k in _BANK_KW)
+    return any(k in text.lower() for k in _BANK_KW)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CURRENT PRICE EXTRACTION
+# HTML EXTRACTION — L1 to L4 Approach
 # ═══════════════════════════════════════════════════════════════════════════
 
-_PRICE_CLASSES = [
+_PRICE_CSS = [
     ("div", "_30jeq3 _16Jk6d"),
     ("div", "_30jeq3"),
     ("span", "_30jeq3"),
     ("div", "CEmiEU"),
     ("span", "CEmiEU"),
 ]
+_DISC_CSS = ["UkUFwK", "VGWI6a", "pPAw9j", "_3Ay6Sb", "Bs5uzZ", "_2Tpdn3", "_1psv1zeb9"]
+_MRP_CSS  = ["yRaY8j", "_3I9_wc", "_3auQ3N", "CAWmgp", "_2p6lqe"]
+_DISC_RE  = re.compile(r"(\d{1,2})%")
+_DISC_OFF = re.compile(r"(\d{1,2})%\s*off", re.IGNORECASE)
 
 
 def extract_current_price(soup: BeautifulSoup) -> int | None:
-    for tag, cls in _PRICE_CLASSES:
+    # Known CSS classes
+    for tag, cls in _PRICE_CSS:
         el = soup.find(tag, class_=cls.split())
         if el:
-            val = parse_int(el.get_text())
-            if val and 50 <= val <= 50_00_000:
-                return val
+            v = parse_int(el.get_text())
+            if v and 50 <= v <= 50_00_000:
+                return v
     # Fallback: first Rs. in page
     for string in soup.strings:
         m = re.search(r"Rs\.\s*([\d,]+)", string)
         if m:
-            val = parse_int(m.group(1))
-            if val and 50 <= val <= 50_00_000:
-                return val
+            v = parse_int(m.group(1))
+            if v and 50 <= v <= 50_00_000:
+                return v
     return None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DISCOUNT EXTRACTION — 4-LAYER
-# ═══════════════════════════════════════════════════════════════════════════
-
-_DISC_RE = re.compile(r"(\d{1,2})%")
-_DISC_OFF_RE = re.compile(r"(\d{1,2})%\s*off", re.IGNORECASE)
-_DISC_CSS = ["UkUFwK", "VGWI6a", "pPAw9j", "_3Ay6Sb", "Bs5uzZ", "_2Tpdn3", "_1psv1zeb9"]
-
-
-def _valid_disc(val: int, ctx: str) -> bool:
-    return 1 <= val <= 95 and not has_bank_kw(ctx)
+def _valid_disc(val: int, context: str) -> bool:
+    return 1 <= val <= 95 and not has_bank_kw(context)
 
 
 def extract_discount(soup: BeautifulSoup) -> str:
-    # L1: Structural — walk 6 levels up from price tag
+    # L1: Structural — walk up 6 levels from price tag
     for string in soup.strings:
         if re.search(r"Rs\.\s*[\d,]+", string):
             container = string.parent
             for _ in range(6):
-                if container is None or container.name in ("body", "html", "[document]"):
+                if not container or container.name in ("body", "html", "[document]"):
                     break
                 container = container.parent
                 for child in container.find_all(True):
@@ -268,13 +321,13 @@ def extract_discount(soup: BeautifulSoup) -> str:
             m = re.match(r"^(\d{1,2})%", text)
             if m:
                 v = int(m.group(1))
-                pt = tag.parent.get_text() if tag.parent else ""
-                if _valid_disc(v, pt):
+                parent_text = tag.parent.get_text() if tag.parent else ""
+                if _valid_disc(v, parent_text):
                     return f"{v}%"
 
     # L4: Full text "X% off"
     full = soup.get_text()
-    for m in _DISC_OFF_RE.finditer(full):
+    for m in _DISC_OFF.finditer(full):
         v = int(m.group(1))
         if 1 <= v <= 95:
             ctx = full[max(0, m.start() - 150): m.end() + 50]
@@ -284,15 +337,11 @@ def extract_discount(soup: BeautifulSoup) -> str:
     return ""
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ORIGINAL PRICE ALGORITHM
-# ═══════════════════════════════════════════════════════════════════════════
-
-_MRP_CSS = ["yRaY8j", "_3I9_wc", "_3auQ3N", "CAWmgp", "_2p6lqe"]
-
-
 def extract_original_price(
-    soup: BeautifulSoup, cur: int, disc_str: str, iphone_mode: bool = False
+    soup: BeautifulSoup,
+    cur: int,
+    disc_str: str,
+    iphone_mode: bool = False,
 ) -> str:
     if not disc_str or not cur:
         return ""
@@ -302,7 +351,7 @@ def extract_original_price(
 
     # Step 1: Calculated fallback
     calc = round(cur / (1 - disc / 100))
-    candidates: list[int] = []
+    candidates = []
 
     # Step 2: Collect strikethrough numbers
     for tag in soup.find_all(["s", "del", "strike"]):
@@ -311,17 +360,19 @@ def extract_original_price(
             candidates.append(v)
 
     if not iphone_mode:
+        # CSS line-through (skip for iPhone — variant prices bleed in)
         for tag in soup.find_all(style=re.compile(r"line-through", re.I)):
             v = parse_int(tag.get_text())
             if v and v > cur and 100 <= v <= 50_00_000:
                 candidates.append(v)
+        # MRP CSS classes
         for cls in _MRP_CSS:
             for tag in soup.find_all(["div", "span"], class_=cls):
                 v = parse_int(tag.get_text())
                 if v and v > cur and 100 <= v <= 50_00_000:
                     candidates.append(v)
 
-    # Steps 3+4: Match
+    # Step 3+4: Best match with tolerance
     if candidates:
         best = min(candidates, key=lambda x: abs(x - calc))
         diff = abs(best - calc)
@@ -331,24 +382,19 @@ def extract_original_price(
     return indian_price(calc)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# iPHONE SPECIAL FUNCTION
-# ═══════════════════════════════════════════════════════════════════════════
-
 def get_iphone_discount(soup: BeautifulSoup) -> tuple[str, str]:
     """
-    Strict iPhone discount extraction.
-    - Only looks before 'Protect Promise Fee' boundary
-    - Only <s> / <del> HTML tags = real MRP strikethrough
-    - CSS line-through = completely ignored (variant prices bleed in)
+    iPhone strict logic:
+    - Only look before 'Protect Promise Fee' boundary
+    - Only <s>/<del> tags = real MRP (CSS line-through ignored)
     - No <s>/<del> found → ("", "") — empty disc + orig
     """
     html = str(soup)
-    bi = html.find("Protect Promise Fee")
-    limited_soup = BeautifulSoup(html[:bi], "html.parser") if bi != -1 else soup
+    boundary = html.find("Protect Promise Fee")
+    limited  = BeautifulSoup(html[:boundary], "html.parser") if boundary != -1 else soup
 
-    mrp: int | None = None
-    for tag in limited_soup.find_all(["s", "del"]):
+    mrp = None
+    for tag in limited.find_all(["s", "del"]):
         v = parse_int(tag.get_text())
         if v and 5_000 <= v <= 5_00_000:
             mrp = v
@@ -358,28 +404,23 @@ def get_iphone_discount(soup: BeautifulSoup) -> tuple[str, str]:
         return "", ""
 
     disc_str = ""
-    for tag in limited_soup.find_all(True):
+    for tag in limited.find_all(True):
         text = tag.get_text(strip=True)
         if 2 <= len(text) <= 8:
             m = re.match(r"^(\d{1,2})%", text)
             if m:
                 v = int(m.group(1))
-                pt = tag.parent.get_text() if tag.parent else ""
-                if 1 <= v <= 50 and not has_bank_kw(pt):
+                parent_text = tag.parent.get_text() if tag.parent else ""
+                if 1 <= v <= 50 and not has_bank_kw(parent_text):
                     disc_str = f"{v}%"
                     break
 
     return disc_str, indian_price(mrp)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# RATING & REVIEWS
-# ═══════════════════════════════════════════════════════════════════════════
-
 def extract_rating(soup: BeautifulSoup) -> str:
     for tag in soup.find_all(["div", "span"]):
-        text = tag.get_text(strip=True)
-        m = re.match(r"^(\d\.\d)\s*★?$", text)
+        m = re.match(r"^(\d\.\d)\s*★?$", tag.get_text(strip=True))
         if m:
             return m.group(1)
     m = re.search(r"(\d\.\d)\s*★", soup.get_text())
@@ -388,7 +429,10 @@ def extract_rating(soup: BeautifulSoup) -> str:
 
 def extract_reviews_pair(soup: BeautifulSoup) -> tuple[str, str]:
     full = soup.get_text()
-    m = re.search(r"([\d,]+)\s+Ratings?\s*[&|]\s*([\d,]+)\s+Reviews?", full, re.IGNORECASE)
+    m = re.search(
+        r"([\d,]+)\s+Ratings?\s*[&|]\s*([\d,]+)\s+Reviews?",
+        full, re.IGNORECASE,
+    )
     if m:
         return (
             indian_number(parse_int(m.group(1))),
@@ -401,7 +445,6 @@ def extract_reviews_pair(soup: BeautifulSoup) -> tuple[str, str]:
 
 
 def combined_rating_reviews(soup: BeautifulSoup) -> str:
-    """Format: '4.1 | 34,452'"""
     rating = extract_rating(soup)
     _, reviews = extract_reviews_pair(soup)
     if rating and reviews:
@@ -410,108 +453,138 @@ def combined_rating_reviews(soup: BeautifulSoup) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TABLE CONFIG
+# TABLE CONFIG — All 12 tables with exact Supabase column names
 # ═══════════════════════════════════════════════════════════════════════════
 
-TABLE_CONFIG: dict[str, dict] = {
+TABLE_CONFIG = {
     "earbuds": {
-        "link_col": "Product Link",
-        "cur_col": "Current Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "rating_col": "Rating",
+        "link_col"   : "Product Link",
+        "cur_col"    : "Current Price",
+        "orig_col"   : "Original Price",
+        "disc_col"   : "Discount",
+        "rating_col" : "Rating",
         "reviews_col": "Number of Reviews",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "gaming cpu": {
-        "link_col": "Product Link",
-        "cur_col": "Current Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "rating_col": "Rating",
+        "link_col"   : "Product Link",
+        "cur_col"    : "Current Price",
+        "orig_col"   : "Original Price",
+        "disc_col"   : "Discount",
+        "rating_col" : "Rating",
         "reviews_col": "Number of Reviews",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "gaming pc": {
-        "link_col": "Product Link",
-        "cur_col": "Price", "orig_col": "Original Price-2",
-        "disc_col": "Discount-2", "rating_col": "Product Rating",
+        "link_col"   : "Product Link",
+        "cur_col"    : "Price",
+        "orig_col"   : "Original Price-2",
+        "disc_col"   : "Discount-2",
+        "rating_col" : "Product Rating",
         "reviews_col": "product review",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "induction": {
-        "link_col": "ProductLink",          # NOTE: bina space
-        "cur_col": "Discounted Price", "orig_col": "Price",
-        "disc_col": "Discount Percentage", "rating_col": "Rating",
+        "link_col"   : "ProductLink",         # NOTE: bina space
+        "cur_col"    : "Discounted Price",
+        "orig_col"   : "Price",
+        "disc_col"   : "Discount Percentage",
+        "rating_col" : "Rating",
         "reviews_col": "Number of Reviews",
-        "swap": True, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "iphone": {
-        "link_col": "Product URL",
-        "cur_col": "Discounted Price", "orig_col": "Price",
-        "disc_col": "Discount Percentage", "rating_col": "Product Rating",
-        "reviews_col": "Number of Reviews", "reviews2_col": "Number of Ratings",
-        "swap": True, "combined": False, "iphone": True,
+        "link_col"    : "Product URL",
+        "cur_col"     : "Discounted Price",
+        "orig_col"    : "Price",
+        "disc_col"    : "Discount Percentage",
+        "rating_col"  : "Product Rating",
+        "reviews_col" : "Number of Reviews",
+        "reviews2_col": "Number of Ratings",
+        "combined"    : False,
+        "iphone"      : True,
     },
     "keybord": {
-        "link_col": "Product Link",
-        "cur_col": "Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "rating_col": "Rating",
+        "link_col"   : "Product Link",
+        "cur_col"    : "Price",
+        "orig_col"   : "Original Price",
+        "disc_col"   : "Discount",
+        "rating_col" : "Rating",
         "reviews_col": "Number of Reviews",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "laptop": {
-        "link_col": "Product Link",
-        "cur_col": "Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "combined_col": "Rating and Reviews",
-        "swap": False, "combined": True, "iphone": False,
+        "link_col"    : "Product Link",
+        "cur_col"     : "Price",
+        "orig_col"    : "Original Price",
+        "disc_col"    : "Discount",
+        "combined_col": "Rating and Reviews",
+        "combined"    : True,
+        "iphone"      : False,
     },
     "monitar": {
-        "link_col": "Product URL",
-        "cur_col": "Current Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "rating_col": "Rating",
+        "link_col"   : "Product URL",
+        "cur_col"    : "Current Price",
+        "orig_col"   : "Original Price",
+        "disc_col"   : "Discount",
+        "rating_col" : "Rating",
         "reviews_col": "Number of Reviews",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "mouse": {
-        "link_col": "Product Link",
-        "cur_col": "Current Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "rating_col": "Rating",
+        "link_col"   : "Product Link",
+        "cur_col"    : "Current Price",
+        "orig_col"   : "Original Price",
+        "disc_col"   : "Discount",
+        "rating_col" : "Rating",
         "reviews_col": "Number of Reviews",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
     "smart phone": {
-        "link_col": "Product Link",
-        "cur_col": "Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "combined_col": "Ratings and Reviews",
-        "swap": False, "combined": True, "iphone": False,
+        "link_col"    : "Product Link",
+        "cur_col"     : "Price",
+        "orig_col"    : "Original Price",
+        "disc_col"    : "Discount",
+        "combined_col": "Ratings and Reviews",
+        "combined"    : True,
+        "iphone"      : False,
     },
     "smart+tv": {
-        "link_col": "Product Link",
-        "cur_col": "Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "combined_col": "Ratings and Reviews",
-        "swap": False, "combined": True, "iphone": False,
+        "link_col"    : "Product Link",
+        "cur_col"     : "Price",
+        "orig_col"    : "Original Price",
+        "disc_col"    : "Discount",
+        "combined_col": "Ratings and Reviews",
+        "combined"    : True,
+        "iphone"      : False,
     },
     "smartwatch": {
-        "link_col": "Product Link",
-        "cur_col": "Price", "orig_col": "Original Price",
-        "disc_col": "Discount", "rating_col": "Rating",
+        "link_col"   : "Product Link",
+        "cur_col"    : "Price",
+        "orig_col"   : "Original Price",
+        "disc_col"   : "Discount",
+        "rating_col" : "Rating",
         "reviews_col": "Review",
-        "swap": False, "combined": False, "iphone": False,
+        "combined"   : False,
+        "iphone"     : False,
     },
 }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PER-ROW SCRAPE
+# BUILD UPDATE DICT FROM HTML
 # ═══════════════════════════════════════════════════════════════════════════
 
-def scrape_row(url: str, cfg: dict) -> dict:
-    html = smart_fetch(url)
-    if not html:
-        logger.error("    ✗ Page fetch failed")
-        return {}
+def build_from_html(soup: BeautifulSoup, cfg: dict) -> dict:
+    update = {}
 
-    soup = BeautifulSoup(html, "html.parser")
-    update: dict = {}
-
-    # ── iPhone mode ───────────────────────────────────────────────────────
     if cfg["iphone"]:
         cur = extract_current_price(soup)
         if cur:
@@ -529,26 +602,31 @@ def scrape_row(url: str, cfg: dict) -> dict:
             update[cfg.get("reviews2_col", "Number of Ratings")] = ratings_cnt
         return update
 
-    # ── Combined column ───────────────────────────────────────────────────
     if cfg["combined"]:
         cur = extract_current_price(soup)
         if cur:
             update[cfg["cur_col"]] = indian_price(cur)
         disc_str = extract_discount(soup)
         update[cfg["disc_col"]] = disc_str
-        update[cfg["orig_col"]] = extract_original_price(soup, cur, disc_str) if (disc_str and cur) else ""
+        update[cfg["orig_col"]] = (
+            extract_original_price(soup, cur, disc_str)
+            if disc_str and cur else ""
+        )
         cr = combined_rating_reviews(soup)
         if cr:
             update[cfg["combined_col"]] = cr
         return update
 
-    # ── Standard table ────────────────────────────────────────────────────
+    # Standard table
     cur = extract_current_price(soup)
     if cur:
         update[cfg["cur_col"]] = indian_price(cur)
     disc_str = extract_discount(soup)
     update[cfg["disc_col"]] = disc_str
-    update[cfg["orig_col"]] = extract_original_price(soup, cur, disc_str) if (disc_str and cur) else ""
+    update[cfg["orig_col"]] = (
+        extract_original_price(soup, cur, disc_str)
+        if disc_str and cur else ""
+    )
     rating = extract_rating(soup)
     if rating:
         update[cfg["rating_col"]] = rating
@@ -559,17 +637,94 @@ def scrape_row(url: str, cfg: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# BUILD UPDATE DICT FROM AI RESPONSE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_from_ai(ai_data: dict, cfg: dict) -> dict:
+    """
+    AI response se update dict banao.
+    NOTE: (X or "") pattern use karo — None.strip() crash rokne ke liye.
+    """
+    update = {}
+    if not ai_data:
+        return update
+
+    # Safely extract — None values ko "" se replace karo
+    cur_price  = str(ai_data.get("current_price")  or "").strip()
+    orig_price = str(ai_data.get("original_price") or "").strip()
+    discount   = str(ai_data.get("discount")       or "").strip()
+    rating     = str(ai_data.get("rating")         or "").strip()
+    reviews    = str(ai_data.get("reviews")        or "").strip()
+    ratings_c  = str(ai_data.get("ratings_count")  or "").strip()
+
+    if cur_price:
+        update[cfg["cur_col"]] = cur_price
+    if orig_price:
+        update[cfg["orig_col"]] = orig_price
+    if discount:
+        update[cfg["disc_col"]] = discount
+
+    if cfg["combined"]:
+        if rating and reviews:
+            update[cfg["combined_col"]] = f"{rating} | {reviews}"
+    elif cfg["iphone"]:
+        if rating:
+            update[cfg["rating_col"]] = rating
+        if reviews:
+            update[cfg["reviews_col"]] = reviews
+        if ratings_c and "reviews2_col" in cfg:
+            update[cfg["reviews2_col"]] = ratings_c
+    else:
+        if rating:
+            update[cfg["rating_col"]] = rating
+        if reviews:
+            update[cfg["reviews_col"]] = reviews
+
+    return update
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SCRAPE ROW — Main logic
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_row(url: str, cfg: dict) -> dict:
+    # Attempts 1-4: HTML fetch
+    html = fetch_html(url)
+
+    if html:
+        soup   = BeautifulSoup(html, "html.parser")
+        update = build_from_html(soup, cfg)
+
+        if update.get(cfg["cur_col"]):
+            logger.info("  ✓ HTML parser se data mila")
+            return update
+        else:
+            logger.warning("  HTML mila lekin price extract nahi hua — AI try kar raha hoon")
+
+    # Attempt 5: AI fields
+    ai_data = ws_ai_fields(url)
+    update  = build_from_ai(ai_data, cfg)
+
+    if update:
+        logger.info("  ✓ AI fields se data mila")
+    else:
+        logger.error("  ✗ Sab 5 attempts fail — koi data nahi")
+
+    return update
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # TABLE PROCESSOR
 # ═══════════════════════════════════════════════════════════════════════════
 
 def process_table(table_name: str, cfg: dict):
-    logger.info(f"\n{'━'*55}")
+    logger.info(f"\n{'━' * 60}")
     logger.info(f"  TABLE: {table_name}")
-    logger.info(f"{'━'*55}")
+    logger.info(f"{'━' * 60}")
 
     try:
         result = supabase.table(table_name).select("*").execute()
-        rows = result.data or []
+        rows   = result.data or []
     except Exception as e:
         logger.error(f"  Supabase fetch failed: {e}")
         return
@@ -584,19 +739,19 @@ def process_table(table_name: str, cfg: dict):
             skip += 1
             continue
 
-        logger.info(f"  [{i}/{len(rows)}] {url[:75]}")
+        logger.info(f"\n  [{i}/{len(rows)}] {url[:80]}")
 
         try:
             update = scrape_row(url, cfg)
         except Exception as e:
-            logger.error(f"    Exception: {e}")
+            logger.error(f"  scrape_row exception: {e}")
             fail += 1
             time.sleep(3)
             continue
 
         if not update:
             fail += 1
-            time.sleep(3)
+            time.sleep(2)
             continue
 
         for k, v in update.items():
@@ -612,7 +767,7 @@ def process_table(table_name: str, cfg: dict):
 
         time.sleep(1)
 
-    logger.info(f"  Done — success={success}  fail={fail}  skip={skip}")
+    logger.info(f"\n  TABLE DONE — success={success}  fail={fail}  skip={skip}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -620,20 +775,21 @@ def process_table(table_name: str, cfg: dict):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    logger.info("=" * 55)
-    logger.info("  Flipkart Scraper — AlterLab SDK Edition")
-    logger.info("=" * 55)
+    logger.info("=" * 60)
+    logger.info("  Flipkart Scraper — WebScraping.AI + 5-Attempt Agent")
+    logger.info("=" * 60)
 
     for table_name, cfg in TABLE_CONFIG.items():
         try:
             process_table(table_name, cfg)
         except Exception as e:
-            logger.error(f"FATAL in '{table_name}': {e}")
-            continue  # Non-cancel policy: baaki tables continue karo
+            # Non-cancel policy: ek table fail ho toh baaki chalta rahe
+            logger.error(f"FATAL error in table '{table_name}': {e}")
+            continue
 
-    logger.info("\n" + "=" * 55)
+    logger.info("\n" + "=" * 60)
     logger.info("  ALL TABLES DONE")
-    logger.info("=" * 55)
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":
