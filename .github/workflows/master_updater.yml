@@ -1,4 +1,4 @@
-name: Flipkart Price Updater — Agent Mode
+name: Flipkart Price Updater — WebScraping.AI Agent
 
 on:
   schedule:
@@ -26,9 +26,8 @@ jobs:
 
       - name: Run price updater
         env:
-          SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:        ${{ secrets.SUPABASE_KEY }}
-          ALTERLAB_API_KEY:    ${{ secrets.ALTERLAB_API_KEY }}
-          OPENROUTER_API_KEY:  ${{ secrets.OPENROUTER_API_KEY }}
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:         ${{ secrets.SUPABASE_KEY }}
+          WEBSCRAPING_AI_KEY:   ${{ secrets.WEBSCRAPING_AI_KEY }}
         run: python master_updater.py
 
