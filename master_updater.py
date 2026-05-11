@@ -39,7 +39,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ── AlterLab client ───────────────────────────────────────────────────────
 # SDK reads ALTERLAB_API_KEY env var automatically — no need to pass api_key
 # GitHub Secret name MUST be: ALTERLAB_API_KEY
-alterlab = AlterLabSync()
+alterlab = AlterLabSync(api_key=os.environ["ALTERLAB_API_KEY"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
