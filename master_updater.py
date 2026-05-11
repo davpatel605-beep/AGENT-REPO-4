@@ -106,8 +106,17 @@ def _poll_job(job_id: str, label: str, max_wait: int = 120) -> str | None:
 
 
 def _alterlab_call(url: str, render: bool) -> str | None:
-    payload = {"url": url, "render": render}
-    label   = "RENDER" if render else "CHEAP"
+    """
+    ASYNC mode: "async": true ZARURI hai — tabhi job_id pollable hota hai.
+    Bina async:true ke job_id milta hai lekin poll pe 404 aata hai.
+    """
+    payload = {
+        "url"  : url,
+        "render": render,
+        "async": True,       # ← ZARURI: is ke bina job poll nahi hota
+        "formats": ["html"], # ← HTML chahiye
+    }
+    label = "RENDER" if render else "CHEAP"
     try:
         resp = requests.post(ALTERLAB_SCRAPE, headers=ALTERLAB_HDR, json=payload, timeout=60)
         logger.info(f"    [{label}] Submit HTTP {resp.status_code}")
@@ -125,23 +134,23 @@ def _alterlab_call(url: str, render: bool) -> str | None:
             except Exception:
                 data = {}
 
-            # Case 1: Direct HTML response (sync)
-            html = (data.get("html") or data.get("content") or
-                    data.get("text") or data.get("body") or "")
-            if isinstance(html, str) and len(html) > 1000:
+            # Async job_id → poll karo
+            job_id = data.get("job_id") or data.get("id")
+            if job_id:
+                logger.info(f"    [{label}] Job: {job_id} — polling...")
+                return _poll_job(job_id, label, max_wait=120)
+
+            # Sync response (rare) — direct HTML
+            content = data.get("result", {}).get("content", {})
+            html = content.get("html") or content.get("text") or data.get("html") or ""
+            if len(html) > 1000:
                 logger.info(f"    [{label}] Sync OK — {len(html)} chars")
                 return html
 
-            # Case 2: Async job — poll karo
-            job_id = data.get("job_id") or data.get("id")
-            if job_id:
-                logger.info(f"    [{label}] Async job: {job_id} — polling...")
-                return _poll_job(job_id, label, max_wait=90)
-
-            logger.warning(f"    [{label}] Unknown response: {str(data)[:200]}")
+            logger.warning(f"    [{label}] Unknown response: {str(data)[:300]}")
 
         else:
-            logger.warning(f"    [{label}] HTTP {resp.status_code}: {resp.text[:150]}")
+            logger.warning(f"    [{label}] HTTP {resp.status_code}: {resp.text[:200]}")
 
     except Exception as e:
         logger.warning(f"    [{label}] Error: {e}")
