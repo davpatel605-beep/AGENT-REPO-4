@@ -23,7 +23,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install alterlab beautifulsoup4
-          pip install "supabase==2.3.4" "gotrue==2.4.2" "httpx==0.27.2" --force-reinstall
+          pip install "supabase==2.3.4" "gotrue==2.4.2" "httpx==0.25.2"
+        # WHY THESE EXACT VERSIONS:
+        # supabase 2.3.4 → httpx >=0.24, <0.26 chahiye (line 74 error se confirm)
+        # httpx 0.25.2   → supabase ki range mein hai + 'proxy' param exist karta hai
+        # gotrue 2.4.2   → proxy bug nahi hai is version mein
+        # httpx 0.25.2 is the ONLY version that satisfies ALL three conditions
 
       - name: Run price updater
         env:
