@@ -271,7 +271,7 @@ def ask_llm_discount(html_snippet: str) -> str:
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 10,
             },
-            timeout=30,
+            timeout=120,  # 2 minutes — enough for LLM to think
         )
         resp.raise_for_status()
         answer = resp.json()["choices"][0]["message"]["content"].strip()
@@ -530,7 +530,7 @@ def get_discount(soup, ft):
     # S4: "X% off" in text — exclude bank offers
     bank_kw = ["bank","credit","debit","hdfc","sbi","axis","icici",
                "cashback","upi","emi","kotak","rbl","paytm","rupay"]
-    for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
+    for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
         val = int(m.group(1))
         if not (1 <= val <= 99): continue
         ctx = ft[max(0, m.start()-80): m.end()+40].lower()
@@ -830,9 +830,13 @@ def process_table(client, cfg):
             if soup2:
                 ft2 = soup2.get_text(" ", strip=True)
 
-                # LLM for discount if still missing
+                # LLM for discount — wrapped safely, never blocks workflow
                 if not disc:
-                    disc = ask_llm_discount(str(soup2))
+                    try:
+                        disc = ask_llm_discount(str(soup2))
+                    except Exception as llm_err:
+                        log.warning(f"   [LLM-SKIP] {llm_err}")
+                        disc = ""
                     if not disc:
                         disc = get_discount(soup2, ft2)
 
@@ -844,8 +848,25 @@ def process_table(client, cfg):
                 if not orig and disc:
                     orig = get_original_price(soup2, ft2, cur, disc)
                 log.info(f"   Pass2: disc={disc} rating={rating} reviews={reviews}")
+
+        # ── Pass 3: RENDER again (no LLM) — if still missing after Pass2 ──────
+        if not disc or not reviews or not rating:
+            log.info("   Pass3 (RENDER fallback — no LLM)...")
+            soup3 = fetch(url, render=True)
+            if soup3:
+                ft3 = soup3.get_text(" ", strip=True)
+                if not disc:
+                    disc = get_discount(soup3, ft3)
+                r3  = get_rating(soup3, ft3)
+                rv3 = extract_review_number(soup3, ft3, r3, disc)
+                if not rating:  rating  = r3
+                if not reviews: reviews = rv3
+                if not cur:     cur     = get_current_price(soup3, ft3)
+                if not orig and disc:
+                    orig = get_original_price(soup3, ft3, cur, disc)
+                log.info(f"   Pass3: disc={disc} rating={rating} reviews={reviews}")
         else:
-            log.info("   Pass2 skipped ✅ credits saved")
+            log.info("   Pass2/Pass3 skipped ✅ credits saved")
 
         # Math fallbacks
         cur, orig, disc = math_fallbacks(cur, orig, disc)
