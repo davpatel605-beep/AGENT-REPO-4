@@ -471,44 +471,172 @@ def get_current_price(soup, ft):
 
 
 def get_discount(soup, ft):
-    """STRICT: Only ↓ down arrow = real product discount. Never bank/cashback %."""
-    m = re.search(r"[\u2193\u2198\u25bc\u2b07]\s*(\d{1,2})\s*%", ft)
-    if m and 1 <= int(m.group(1)) <= 99:
-        return m.group(1) + "%"
-    tag = soup.select_one("div._1psv1zeb9._1psv1ze0._1psv1zedr")
-    if tag:
-        m = re.search(r"(\d{1,2})%", safe(tag))
-        if m and 1 <= int(m.group(1)) <= 99:
-            return m.group(1) + "%"
-    for tag in soup.find_all(["div","span"]):
-        text = safe(tag).strip()
-        if len(text) > 15: continue
-        m = re.fullmatch(r"(\d{1,2})%\s*(off)?", text, re.I)
-        if m and 1 <= int(m.group(1)) <= 99:
-            return m.group(1) + "%"
-    return ""
+    """
+    Pattern (from image): ↓78%  4,999  ₹1,099
+    - ↓ = green down arrow (CSS, comes before number)
+    - 78 = 1-2 digit number (large green bold text)
+    - % = percent sign (comes right after number)
+
+    The "78%" is in a short HTML tag. Find it.
+    """
+    from collections import Counter
+    candidates = []
+
+    # S1: Short tag (2-6 chars) with ONLY "X%" — the discount badge
+    for tag in soup.find_all(["div", "span"]):
+        t = safe(tag).strip()
+        if 2 <= len(t) <= 6:
+            m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", t, re.I)
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    parent_t = safe(tag.parent)[:60].lower() if tag.parent else ""
+                    if "rating" not in parent_t and "review" not in parent_t:
+                        candidates.append(val)
+
+    # S2: Flipkart CSS discount badge class
+    for sel in ["div._1psv1zeb9._1psv1ze0._1psv1zedr",
+                "div.UkUFwK", "span.UkUFwK"]:
+        try:
+            tag = soup.select_one(sel)
+        except Exception:
+            continue
+        if tag:
+            m = re.search(r"(\d{1,2})\s*%", safe(tag).strip())
+            if m:
+                val = int(m.group(1))
+                if 1 <= val <= 99:
+                    candidates.append(val)
+                    break
+
+    # S3: Near rating tag — discount line is just below rating
+    for tag in soup.find_all(["div", "span"]):
+        if re.fullmatch(r"[1-5]\.[0-9]", safe(tag).strip()):
+            node = tag.parent
+            for _ in range(5):
+                if not node: break
+                for child in node.find_all(["div", "span"]):
+                    t = safe(child).strip()
+                    if 2 <= len(t) <= 6:
+                        m = re.fullmatch(r"(\d{1,2})\s*%\s*(off)?", t, re.I)
+                        if m:
+                            val = int(m.group(1))
+                            if 1 <= val <= 99:
+                                candidates.append(val)
+                                break
+                node = node.parent
+            break
+
+    # S4: "X% off" in text — exclude bank offers
+    bank_kw = ["bank","credit","debit","hdfc","sbi","axis","icici",
+               "cashback","upi","emi","kotak","rbl","paytm","rupay"]
+    for m in re.finditer(r"(\d{1,2})%\s+off", ft, re.I):
+        val = int(m.group(1))
+        if not (1 <= val <= 99): continue
+        ctx = ft[max(0, m.start()-80): m.end()+40].lower()
+        if not any(kw in ctx for kw in bank_kw):
+            candidates.append(val)
+            break
+
+    if not candidates:
+        log.info("   [DISC] Not found")
+        return ""
+
+    votes = Counter(candidates)
+    best_val = votes.most_common(1)[0][0]
+    log.info(f"   [DISC] {best_val}% votes={candidates}")
+    return str(best_val) + "%"
 
 
 def get_original_price(soup, ft, cur, disc):
+    """
+    Original price = MRP (strikethrough number between ↓86% and ₹current).
+
+    Strikethrough digit patterns in HTML (line through each digit):
+      0̶ = <s>0</s>  circle with line
+      1̶ = <s>1</s>  bar with line
+      2̶ = <s>2</s>  curve with line
+      3̶ = <s>3</s>  two bumps with line
+      4̶ = <s>4</s>  angle with line
+      5̶ = <s>5</s>  flat-curve-flat with line
+      6̶ = <s>6</s>  oval+tail with line
+      7̶ = <s>7</s>  top+diagonal with line
+      8̶ = <s>8</s>  TWO ovals with line (NOT same as 0̶)
+      9̶ = <s>9</s>  oval on top+tail down with line
+
+    HTML tags: <s>2,999</s> or <del>2,999</del> or style="line-through"
+
+    Strategy:
+      1. Calculate exact MRP = cur / (1 - disc/100)
+      2. Collect all strikethrough numbers from page
+      3. Find closest to calculated — within ₹15 → use page number
+         within 10% → use page number; else → use exact calculation
+    """
+    if not cur or not cur.isdigit() or not disc:
+        return ""
+
+    d = disc.replace("%","").strip()
+    if not d.isdigit() or not (1 <= int(d) <= 99):
+        return ""
+
+    calc_mrp  = round(int(cur) / (1 - int(d) / 100))
+    min_orig  = int(cur) + 1
+    log.info(f"   [MRP-CALC] cur={cur} disc={disc} → calc={calc_mrp}")
+
+    # Collect strikethrough numbers from all sources
+    found = []
+
+    # A. <s> tag — most common on Flipkart
+    for tag in soup.find_all("s"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+            found.append(int(v))
+
+    # B. <del> tag
+    for tag in soup.find_all("del"):
+        v = to_num(safe(tag))
+        if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+            found.append(int(v))
+
+    # C. CSS line-through style
+    for tag in soup.find_all(True):
+        if "line-through" in tag.get("style", ""):
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+
+    # D. Flipkart MRP CSS classes
+    for sel in [
+        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
+        "div.yRaY8j.ZYYwLA", "div.yRaY8j",
+        "div._3I9_wc._2p6lqe", "div._3I9_wc",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            v = to_num(safe(tag))
+            if v and v.isdigit() and int(v) >= min_orig and valid_price(v):
+                found.append(int(v))
+
+    # Match found numbers to calculated MRP
+    if found:
+        closest  = min(found, key=lambda x: abs(x - calc_mrp))
+        diff_rs  = abs(closest - calc_mrp)
+        diff_pct = diff_rs / calc_mrp if calc_mrp else 1
+
+        if diff_rs <= 15:
+            log.info(f"   [MRP-PAGE ₹{diff_rs}] {closest}")
+            return str(closest)
+        elif diff_pct <= 0.10:
+            log.info(f"   [MRP-PAGE {diff_pct:.1%}] {closest}")
+            return str(closest)
+        else:
+            log.info(f"   [MRP-CALC ₹{diff_rs}diff] {calc_mrp}")
+            return str(calc_mrp)
+
+    # JSON-LD fallback
     def ok(v):
         if not v or not valid_price(v): return False
-        return int(v) > int(cur) if cur and cur.isdigit() else True
-
-    if cur and cur.isdigit() and disc:
-        d = disc.replace("%","").strip()
-        if d.isdigit() and 1 <= int(d) <= 99:
-            exp = int(cur) / (1 - int(d)/100)
-            best_v, best_diff = "", float("inf")
-            for p in re.findall(r"₹\s*([\d,]+)", ft):
-                v = p.replace(",","")
-                if not v.isdigit() or not valid_price(v) or int(v) <= int(cur): continue
-                diff = abs(int(v) - exp) / exp
-                if diff < best_diff and diff <= 0.05:
-                    best_diff, best_v = diff, v
-            if best_v:
-                log.info(f"   [MATH] orig={best_v} diff={best_diff:.2%}")
-                return best_v
-
+        return int(v) >= min_orig
     for sc in soup.find_all("script", {"type":"application/ld+json"}):
         try:
             obj = json.loads(sc.string or "")
@@ -520,32 +648,9 @@ def get_original_price(soup, ft, cur, disc):
                     if ok(v): return v
         except: pass
 
-    for s in soup.find_all("s"):
-        v = to_num(safe(s))
-        if ok(v): return v
-
-    for sel in [
-        "div.v1zwn21m.v1zwn28._1psv1zeb9._1psv1ze0._1psv1zedi._1psv1zefu",
-        "div.yRaY8j.ZYYwLA","div.yRaY8j",
-        "div._3I9_wc._2p6lqe","div._3I9_wc",
-    ]:
-        tag = soup.select_one(sel)
-        if tag:
-            v = to_num(safe(tag))
-            if ok(v): return v
-
-    for tag in soup.find_all(True):
-        if "line-through" in tag.get("style",""):
-            v = to_num(safe(tag))
-            if ok(v): return v
-
-    if cur:
-        pos = ft.find(cur)
-        if pos > 30:
-            for c in reversed(re.findall(r"₹\s*([\d,]+)", ft[max(0,pos-150):pos])):
-                v = c.replace(",","")
-                if ok(v): return v
-    return ""
+    # No strikethrough found → use exact calculation
+    log.info(f"   [MRP-CALC-ONLY] {calc_mrp}")
+    return str(calc_mrp)
 
 
 def get_rating(soup, ft) -> str:
@@ -801,3 +906,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
