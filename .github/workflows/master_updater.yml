@@ -2,7 +2,7 @@ name: Master Flipkart Updater — All Tables
 
 on:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "0 2 */3 * *"   # Every 3 days (72 hours) at 7:30 AM IST
   workflow_dispatch:
 
 jobs:
